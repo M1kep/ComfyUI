@@ -9188,7 +9188,9 @@ LGraphNode.prototype.executeAction = function(action)
                 if (start_node == null) {
                     continue;
                 }
-                var start_node_slot = link.origin_slot;
+                var start_node_slot = start_node.outputs.findIndex(
+                    out => out.slot_index === link.origin_slot
+                )
                 var start_node_slotpos = null;
                 if (start_node_slot == -1) {
                     start_node_slotpos = [
@@ -13041,7 +13043,9 @@ LGraphNode.prototype.executeAction = function(action)
                 if (!_slot.nameLocked){
 	                menu_info.push({ content: "Rename Slot", slot: slot });
                 }
-    
+                menu_info.push({ "content": "Move Slot Up", slot: slot })
+                menu_info.push({ "content": "Move Slot Down", slot: slot })
+
             }
             options.title =
                 (slot.input ? slot.input.type : slot.output.type) || "*";
@@ -13147,6 +13151,22 @@ LGraphNode.prototype.executeAction = function(action)
                     e.stopPropagation();
                 });
                 input.focus();
+            } else if (v.content.match(/Move Slot (Up|Down)/)) {
+                const info = v.slot
+                const dir = v.content.includes("Move Slot Up") ? -1 : 1
+
+                // Don't move the first or last slot
+                if (v.slot === 0 || v.slot === node.inputs.length - 1) {
+                    return
+                }
+
+                const puts = info.output ? node.outputs : node.inputs
+
+                const tmp = puts[info.slot]
+                puts[info.slot] = puts[info.slot + dir]
+                puts[info.slot + dir] = tmp
+
+                that.setDirty(false, true)
             }
 
             //if(v.callback)
