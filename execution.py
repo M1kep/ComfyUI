@@ -219,7 +219,8 @@ def validate_inputs(prompt, item):
                 return (False, "Bad Input. {}, {}".format(class_type, x))
             o_id = val[0]
             o_class_type = prompt[o_id]['class_type']
-            r = nodes.NODE_CLASS_MAPPINGS[o_class_type].RETURN_TYPES
+            r = tuple(map(lambda rt: rt.split(":")[0] if ":" in rt else rt, nodes.NODE_CLASS_MAPPINGS[o_class_type].RETURN_TYPES))
+
             if r[val[1]] != type_input:
                 return (False, "Return type mismatch. {}, {}, {} != {}".format(class_type, x, r[val[1]], type_input))
             r = validate_inputs(prompt, o_id)
@@ -273,7 +274,7 @@ def validate_prompt(prompt):
         if valid == True:
             good_outputs.add(x)
         else:
-            print("Failed to validate prompt for output {} {}".format(o, reason))
+            print("Failed to validate prompt for output {}({}) {}".format(o, prompt[o]['class_type'], reason))
             print("output will be ignored")
             errors += [(o, reason)]
 

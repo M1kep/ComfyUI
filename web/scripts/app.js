@@ -567,6 +567,8 @@ class ComfyApp {
 						} else if (`${type}:${inputName}` in widgets) {
 							// Support custom widgets by Type:Name
 							Object.assign(config, widgets[`${type}:${inputName}`](this, inputName, inputData, app) || {});
+						} else if (Array.isArray(inputData) && inputData.length >= 2 && "dynamic" in inputData[1]) {
+							this.addInput(inputName, type)
 						} else if (type in widgets) {
 							// Standard type widgets
 							Object.assign(config, widgets[type](this, inputName, inputData, app) || {});
@@ -577,7 +579,13 @@ class ComfyApp {
 					}
 
 					for (const output of nodeData["output"]) {
-						this.addOutput(output, output);
+						if(output.includes(":")) {
+							const splitOutput = output.split(':')
+							//name,type
+							this.addOutput(splitOutput[1],splitOutput[0])
+						} else {
+							this.addOutput(output, output);
+						}
 					}
 
 					const s = this.computeSize();
