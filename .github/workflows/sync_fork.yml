@@ -1,0 +1,22 @@
+name: Sync Fork with Upstream
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # Runs at 00:00 UTC every day
+  workflow_dispatch: # Allows manual triggering
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          ref: master
+
+      - name: Fetch Upstream
+        run: |
+          git remote add upstream https://github.com/comfyanonymous/ComfyUI.git
+          git fetch upstream
+          git merge upstream/master
+          git push
