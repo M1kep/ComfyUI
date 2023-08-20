@@ -8,11 +8,21 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - base_branch: master
+            upstream_branch: master
+            ff_only: false
+          - base_branch: upstream
+            upstream_branch: master
+            ff_only: true
+          # Add more combinations as desired
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          ref: master
+          ref: ${{ matrix.base_branch }}
           fetch-depth: 0 # Fetch all history to allow merge without history error
           token: ${{ secrets.SYNC_TOKEN }}
 
@@ -22,5 +32,9 @@ jobs:
           git config --local user.name "CI"
           git remote add upstream https://github.com/comfyanonymous/ComfyUI.git
           git fetch upstream
-          git merge upstream/master
+          if [ ${{ matrix.ff_only }} == "true" ]; then
+            git merge --ff-only upstream/${{ matrix.upstream_branch }}
+          else
+            git merge upstream/${{ matrix.upstream_branch }}
+          fi
           git push
