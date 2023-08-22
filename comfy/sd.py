@@ -243,6 +243,13 @@ def set_attr(obj, attr, value):
     setattr(obj, attrs[-1], torch.nn.Parameter(value))
     del prev
 
+def get_attr(obj, attr):
+    attrs = attr.split(".")
+    for name in attrs:
+        obj = getattr(obj, name)
+    return obj
+
+
 class ModelPatcher:
     def __init__(self, model, load_device, offload_device, size=0, current_device=None):
         self.size = size
@@ -798,17 +805,14 @@ class ControlNet(ControlBase):
         if x_noisy.shape[0] != self.cond_hint.shape[0]:
             self.cond_hint = broadcast_image_to(self.cond_hint, x_noisy.shape[0], batched_number)
 
-        if self.control_model.dtype == torch.float16:
-            precision_scope = torch.autocast
-        else:
-            precision_scope = contextlib.nullcontext
 
-        with precision_scope(model_management.get_autocast_device(self.device)):
-            context = torch.cat(cond['c_crossattn'], 1)
-            y = cond.get('c_adm', None)
-            control = self.control_model(x=x_noisy, hint=self.cond_hint, timesteps=t, context=context, y=y)
+        context = torch.cat(cond['c_crossattn'], 1)
+        y = cond.get('c_adm', None)
+        if y is not None:
+            y = y.to(self.control_model.dtype)
+        control = self.control_model(x=x_noisy.to(self.control_model.dtype), hint=self.cond_hint, timesteps=t, context=context.to(self.control_model.dtype), y=y)
+
         out = {'middle':[], 'output': []}
-        autocast_enabled = torch.is_autocast_enabled()
 
         for i in range(len(control)):
             if i == (len(control) - 1):
@@ -822,7 +826,7 @@ class ControlNet(ControlBase):
                 x = torch.mean(x, dim=(2, 3), keepdim=True).repeat(1, 1, x.shape[2], x.shape[3])
 
             x *= self.strength
-            if x.dtype != output_dtype and not autocast_enabled:
+            if x.dtype != output_dtype:
                 x = x.to(output_dtype)
 
             if control_prev is not None and key in control_prev:
@@ -859,9 +863,9 @@ class ControlLoraOps:
 
         def forward(self, input):
             if self.up is not None:
-                return torch.nn.functional.linear(input, self.weight + (torch.mm(self.up.flatten(start_dim=1), self.down.flatten(start_dim=1))).reshape(self.weight.shape).type(self.weight.dtype), self.bias)
+                return torch.nn.functional.linear(input, self.weight.to(input.device) + (torch.mm(self.up.flatten(start_dim=1), self.down.flatten(start_dim=1))).reshape(self.weight.shape).type(input.dtype), self.bias)
             else:
-                return torch.nn.functional.linear(input, self.weight, self.bias)
+                return torch.nn.functional.linear(input, self.weight.to(input.device), self.bias)
 
     class Conv2d(torch.nn.Module):
         def __init__(
@@ -898,9 +902,9 @@ class ControlLoraOps:
 
         def forward(self, input):
             if self.up is not None:
-                return torch.nn.functional.conv2d(input, self.weight + (torch.mm(self.up.flatten(start_dim=1), self.down.flatten(start_dim=1))).reshape(self.weight.shape).type(self.weight.dtype), self.bias, self.stride, self.padding, self.dilation, self.groups)
+                return torch.nn.functional.conv2d(input, self.weight.to(input.device) + (torch.mm(self.up.flatten(start_dim=1), self.down.flatten(start_dim=1))).reshape(self.weight.shape).type(input.dtype), self.bias, self.stride, self.padding, self.dilation, self.groups)
             else:
-                return torch.nn.functional.conv2d(input, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
+                return torch.nn.functional.conv2d(input, self.weight.to(input.device), self.bias, self.stride, self.padding, self.dilation, self.groups)
 
     def conv_nd(self, dims, *args, **kwargs):
         if dims == 2:
@@ -922,22 +926,28 @@ class ControlLora(ControlNet):
         controlnet_config["hint_channels"] = self.control_weights["input_hint_block.0.weight"].shape[1]
         controlnet_config["operations"] = ControlLoraOps()
         self.control_model = cldm.ControlNet(**controlnet_config)
-        if model_management.should_use_fp16():
-            self.control_model.half()
+        dtype = model.get_dtype()
+        self.control_model.to(dtype)
         self.control_model.to(model_management.get_torch_device())
         diffusion_model = model.diffusion_model
         sd = diffusion_model.state_dict()
         cm = self.control_model.state_dict()
 
         for k in sd:
+            weight = sd[k]
+            if weight.device == torch.device("meta"): #lowvram NOTE: this depends on the inner working of the accelerate library so it might break.
+                key_split = k.split('.')              # I have no idea why they don't just leave the weight there instead of using the meta device.
+                op = get_attr(diffusion_model, '.'.join(key_split[:-1]))
+                weight = op._hf_hook.weights_map[key_split[-1]]
+
             try:
-                set_attr(self.control_model, k, sd[k])
+                set_attr(self.control_model, k, weight)
             except:
                 pass
 
         for k in self.control_weights:
             if k not in {"lora_controlnet"}:
-                set_attr(self.control_model, k, self.control_weights[k].to(model_management.get_torch_device()))
+                set_attr(self.control_model, k, self.control_weights[k].to(dtype).to(model_management.get_torch_device()))
 
     def copy(self):
         c = ControlLora(self.control_weights, global_average_pooling=self.global_average_pooling)
@@ -1098,11 +1108,10 @@ class T2IAdapter(ControlBase):
         output_dtype = x_noisy.dtype
         out = {'input':[]}
 
-        autocast_enabled = torch.is_autocast_enabled()
         for i in range(len(self.control_input)):
             key = 'input'
             x = self.control_input[i] * self.strength
-            if x.dtype != output_dtype and not autocast_enabled:
+            if x.dtype != output_dtype:
                 x = x.to(output_dtype)
 
             if control_prev is not None and key in control_prev:
