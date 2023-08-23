@@ -2,6 +2,7 @@ import torch
 import contextlib
 import copy
 import inspect
+import math
 
 from comfy import model_management
 from .ldm.util import instantiate_from_config
@@ -742,6 +743,7 @@ class ControlBase:
             device = model_management.get_torch_device()
         self.device = device
         self.previous_controlnet = None
+        self.global_average_pooling = False
 
     def set_cond_hint(self, cond_hint, strength=1.0, timestep_percent_range=(1.0, 0.0)):
         self.cond_hint_original = cond_hint
@@ -777,6 +779,51 @@ class ControlBase:
         c.strength = self.strength
         c.timestep_percent_range = self.timestep_percent_range
 
+    def control_merge(self, control_input, control_output, control_prev, output_dtype):
+        out = {'input':[], 'middle':[], 'output': []}
+
+        if control_input is not None:
+            for i in range(len(control_input)):
+                key = 'input'
+                x = control_input[i]
+                if x is not None:
+                    x *= self.strength
+                    if x.dtype != output_dtype:
+                        x = x.to(output_dtype)
+                out[key].insert(0, x)
+
+        if control_output is not None:
+            for i in range(len(control_output)):
+                if i == (len(control_output) - 1):
+                    key = 'middle'
+                    index = 0
+                else:
+                    key = 'output'
+                    index = i
+                x = control_output[i]
+                if x is not None:
+                    if self.global_average_pooling:
+                        x = torch.mean(x, dim=(2, 3), keepdim=True).repeat(1, 1, x.shape[2], x.shape[3])
+
+                    x *= self.strength
+                    if x.dtype != output_dtype:
+                        x = x.to(output_dtype)
+
+                out[key].append(x)
+        if control_prev is not None:
+            for x in ['input', 'middle', 'output']:
+                o = out[x]
+                for i in range(len(control_prev[x])):
+                    prev_val = control_prev[x][i]
+                    if i >= len(o):
+                        o.append(prev_val)
+                    elif prev_val is not None:
+                        if o[i] is None:
+                            o[i] = prev_val
+                        else:
+                            o[i] += prev_val
+        return out
+
 class ControlNet(ControlBase):
     def __init__(self, control_model, global_average_pooling=False, device=None):
         super().__init__(device)
@@ -811,32 +858,7 @@ class ControlNet(ControlBase):
         if y is not None:
             y = y.to(self.control_model.dtype)
         control = self.control_model(x=x_noisy.to(self.control_model.dtype), hint=self.cond_hint, timesteps=t, context=context.to(self.control_model.dtype), y=y)
-
-        out = {'middle':[], 'output': []}
-
-        for i in range(len(control)):
-            if i == (len(control) - 1):
-                key = 'middle'
-                index = 0
-            else:
-                key = 'output'
-                index = i
-            x = control[i]
-            if self.global_average_pooling:
-                x = torch.mean(x, dim=(2, 3), keepdim=True).repeat(1, 1, x.shape[2], x.shape[3])
-
-            x *= self.strength
-            if x.dtype != output_dtype:
-                x = x.to(output_dtype)
-
-            if control_prev is not None and key in control_prev:
-                prev = control_prev[key][index]
-                if prev is not None:
-                    x += prev
-            out[key].append(x)
-        if control_prev is not None and 'input' in control_prev:
-            out['input'] = control_prev['input']
-        return out
+        return self.control_merge(None, control, control_prev, output_dtype)
 
     def copy(self):
         c = ControlNet(self.control_model, global_average_pooling=self.global_average_pooling)
@@ -1078,6 +1100,12 @@ class T2IAdapter(ControlBase):
         self.channels_in = channels_in
         self.control_input = None
 
+    def scale_image_to(self, width, height):
+        unshuffle_amount = self.t2i_model.unshuffle_amount
+        width = math.ceil(width / unshuffle_amount) * unshuffle_amount
+        height = math.ceil(height / unshuffle_amount) * unshuffle_amount
+        return width, height
+
     def get_control(self, x_noisy, t, cond, batched_number):
         control_prev = None
         if self.previous_controlnet is not None:
@@ -1095,43 +1123,24 @@ class T2IAdapter(ControlBase):
                 del self.cond_hint
             self.control_input = None
             self.cond_hint = None
-            self.cond_hint = utils.common_upscale(self.cond_hint_original, x_noisy.shape[3] * 8, x_noisy.shape[2] * 8, 'nearest-exact', "center").float().to(self.device)
+            width, height = self.scale_image_to(x_noisy.shape[3] * 8, x_noisy.shape[2] * 8)
+            self.cond_hint = utils.common_upscale(self.cond_hint_original, width, height, 'nearest-exact', "center").float().to(self.device)
             if self.channels_in == 1 and self.cond_hint.shape[1] > 1:
                 self.cond_hint = torch.mean(self.cond_hint, 1, keepdim=True)
         if x_noisy.shape[0] != self.cond_hint.shape[0]:
             self.cond_hint = broadcast_image_to(self.cond_hint, x_noisy.shape[0], batched_number)
         if self.control_input is None:
+            self.t2i_model.to(x_noisy.dtype)
             self.t2i_model.to(self.device)
-            self.control_input = self.t2i_model(self.cond_hint)
+            self.control_input = self.t2i_model(self.cond_hint.to(x_noisy.dtype))
             self.t2i_model.cpu()
 
-        output_dtype = x_noisy.dtype
-        out = {'input':[]}
-
-        for i in range(len(self.control_input)):
-            key = 'input'
-            x = self.control_input[i] * self.strength
-            if x.dtype != output_dtype:
-                x = x.to(output_dtype)
-
-            if control_prev is not None and key in control_prev:
-                index = len(control_prev[key]) - i * 3 - 3
-                prev = control_prev[key][index]
-                if prev is not None:
-                    x += prev
-            out[key].insert(0, None)
-            out[key].insert(0, None)
-            out[key].insert(0, x)
-
-        if control_prev is not None and 'input' in control_prev:
-            for i in range(len(out['input'])):
-                if out['input'][i] is None:
-                    out['input'][i] = control_prev['input'][i]
-        if control_prev is not None and 'middle' in control_prev:
-            out['middle'] = control_prev['middle']
-        if control_prev is not None and 'output' in control_prev:
-            out['output'] = control_prev['output']
-        return out
+        control_input = list(map(lambda a: None if a is None else a.clone(), self.control_input))
+        mid = None
+        if self.t2i_model.xl == True:
+            mid = control_input[-1:]
+            control_input = control_input[:-1]
+        return self.control_merge(control_input, mid, control_prev, x_noisy.dtype)
 
     def copy(self):
         c = T2IAdapter(self.t2i_model, self.channels_in)
@@ -1154,11 +1163,20 @@ def load_t2i_adapter(t2i_data):
         down_opts = list(filter(lambda a: a.endswith("down_opt.op.weight"), keys))
         if len(down_opts) > 0:
             use_conv = True
-        model_ad = adapter.Adapter(cin=cin, channels=[channel, channel*2, channel*4, channel*4][:4], nums_rb=2, ksize=ksize, sk=True, use_conv=use_conv)
+        xl = False
+        if cin == 256:
+            xl = True
+        model_ad = adapter.Adapter(cin=cin, channels=[channel, channel*2, channel*4, channel*4][:4], nums_rb=2, ksize=ksize, sk=True, use_conv=use_conv, xl=xl)
     else:
         return None
-    model_ad.load_state_dict(t2i_data)
-    return T2IAdapter(model_ad, cin // 64)
+    missing, unexpected = model_ad.load_state_dict(t2i_data)
+    if len(missing) > 0:
+        print("t2i missing", missing)
+
+    if len(unexpected) > 0:
+        print("t2i unexpected", unexpected)
+
+    return T2IAdapter(model_ad, model_ad.input_channels)
 
 
 class StyleModel:
