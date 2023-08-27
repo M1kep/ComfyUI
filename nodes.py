@@ -1694,9 +1694,16 @@ def load_custom_node(module_path, ignore=set()):
         module_spec.loader.exec_module(module)
 
         if hasattr(module, "WEB_DIRECTORY") and getattr(module, "WEB_DIRECTORY") is not None:
-            web_dir = os.path.abspath(os.path.join(module_dir, getattr(module, "WEB_DIRECTORY")))
-            if os.path.isdir(web_dir):
-                EXTENSION_WEB_DIRS[module_name] = web_dir
+            module_web_dir = getattr(module, "WEB_DIRECTORY")
+            if isinstance(module_web_dir, str):
+                web_dir = os.path.abspath(os.path.join(module_dir, getattr(module, "WEB_DIRECTORY")))
+                if os.path.isdir(web_dir):
+                    EXTENSION_WEB_DIRS[module_name] = web_dir
+            elif isinstance(module_web_dir, tuple):
+                # (web_dir, list[str](files))
+                web_dir = os.path.abspath(os.path.join(module_dir, module_web_dir[0]))
+                if os.path.isdir(web_dir):
+                    EXTENSION_WEB_DIRS[module_name] = (web_dir, module_web_dir[1])
 
         if hasattr(module, "NODE_CLASS_MAPPINGS") and getattr(module, "NODE_CLASS_MAPPINGS") is not None:
             for name in module.NODE_CLASS_MAPPINGS:

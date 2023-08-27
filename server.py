@@ -132,9 +132,15 @@ class PromptServer():
             extensions = list(map(lambda f: "/" + os.path.relpath(f, self.web_root).replace("\\", "/"), files))
             
             for name, dir in nodes.EXTENSION_WEB_DIRS.items():
-                files = glob.glob(os.path.join(dir, '**/*.js'), recursive=True)
-                extensions.extend(list(map(lambda f: "/extensions/" + urllib.parse.quote(
-                    name) + "/" + os.path.relpath(f, dir).replace("\\", "/"), files)))
+                if isinstance(dir, str):
+                    files = glob.glob(os.path.join(dir, '**/*.js'), recursive=True)
+                    extensions.extend(list(map(lambda f: "/extensions/" + urllib.parse.quote(
+                        name) + "/" + os.path.relpath(f, dir).replace("\\", "/"), files)))
+                elif isinstance(dir, tuple):
+                    for file in dir[1]:
+                        extensions.append(
+                            urllib.parse.quote(os.path.join("/extensions/", name, file))
+                        )
 
             return web.json_response(extensions)
 
@@ -506,6 +512,8 @@ class PromptServer():
         self.app.add_routes(self.routes)
 
         for name, dir in nodes.EXTENSION_WEB_DIRS.items():
+            if isinstance(dir, tuple):
+                    dir = dir[0]
             self.app.add_routes([
                 web.static('/extensions/' + urllib.parse.quote(name), dir, follow_symlinks=True),
             ])
