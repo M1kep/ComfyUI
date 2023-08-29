@@ -1,9 +1,10 @@
 import torch
 import math
+import os
 import comfy.utils
-import comfy.sd
 import comfy.model_management
 import comfy.model_detection
+import comfy.model_patcher
 
 import comfy.cldm.cldm
 import comfy.t2i_adapter.adapter
@@ -129,7 +130,7 @@ class ControlNet(ControlBase):
     def __init__(self, control_model, global_average_pooling=False, device=None):
         super().__init__(device)
         self.control_model = control_model
-        self.control_model_wrapped = comfy.sd.ModelPatcher(self.control_model, load_device=comfy.model_management.get_torch_device(), offload_device=comfy.model_management.unet_offload_device())
+        self.control_model_wrapped = comfy.model_patcher.ModelPatcher(self.control_model, load_device=comfy.model_management.get_torch_device(), offload_device=comfy.model_management.unet_offload_device())
         self.global_average_pooling = global_average_pooling
 
     def get_control(self, x_noisy, t, cond, batched_number):
@@ -386,7 +387,8 @@ def load_controlnet(ckpt_path, model=None):
         control_model = control_model.half()
 
     global_average_pooling = False
-    if ckpt_path.endswith("_shuffle.pth") or ckpt_path.endswith("_shuffle.safetensors") or ckpt_path.endswith("_shuffle_fp16.safetensors"): #TODO: smarter way of enabling global_average_pooling
+    filename = os.path.splitext(ckpt_path)[0]
+    if filename.endswith("_shuffle") or filename.endswith("_shuffle_fp16"): #TODO: smarter way of enabling global_average_pooling
         global_average_pooling = True
 
     control = ControlNet(control_model, global_average_pooling=global_average_pooling)
