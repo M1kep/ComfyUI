@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.ndimage import grey_dilation
+import scipy.ndimage
 import torch
 import comfy.utils
 
@@ -311,7 +311,7 @@ class GrowMask:
         return {
             "required": {
                 "mask": ("MASK",),
-                "expand": ("INT", {"default": 0, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
+                "expand": ("INT", {"default": 0, "min": -MAX_RESOLUTION, "max": MAX_RESOLUTION, "step": 1}),
                 "tapered_corners": ("BOOLEAN", {"default": True}),
             },
         }
@@ -327,12 +327,19 @@ class GrowMask:
         kernel = np.array([[c, 1, c],
                            [1, 1, 1],
                            [c, 1, c]])
-        output = mask.numpy().copy()
-        while expand > 0:
-            output = grey_dilation(output, footprint=kernel)
-            expand -= 1
-        output = torch.from_numpy(output)
-        return (output,)
+        mask = mask.reshape((-1, mask.shape[-2], mask.shape[-1]))
+        out = []
+        for m in mask:
+            output = m.numpy()
+            while expand < 0:
+                output = scipy.ndimage.grey_erosion(output, footprint=kernel)
+                expand += 1
+            while expand > 0:
+                output = scipy.ndimage.grey_dilation(output, footprint=kernel)
+                expand -= 1
+            output = torch.from_numpy(output)
+            out.append(output)
+        return (torch.cat(out, dim=0),)
 
 
 
