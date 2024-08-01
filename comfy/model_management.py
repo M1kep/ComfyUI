@@ -318,7 +318,7 @@ class LoadedModel:
         return self.model is other.model
 
 def minimum_inference_memory():
-    return (1024 * 1024 * 1024)
+    return (1024 * 1024 * 1024) * 1.2
 
 def unload_model_clones(model, unload_weights_only=True, force_unload=True):
     to_unload = []
@@ -660,6 +660,17 @@ def supports_cast(device, dtype): #TODO
     if dtype == torch.float8_e5m2:
         return True
     return False
+
+def pick_weight_dtype(dtype, fallback_dtype, device=None):
+    if dtype is None:
+        dtype = fallback_dtype
+    elif dtype_size(dtype) > dtype_size(fallback_dtype):
+        dtype = fallback_dtype
+
+    if not supports_cast(device, dtype):
+        dtype = fallback_dtype
+
+    return dtype
 
 def device_supports_non_blocking(device):
     if is_device_mps(device):
