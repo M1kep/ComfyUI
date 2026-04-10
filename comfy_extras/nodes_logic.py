@@ -91,6 +91,67 @@ class SoftSwitchNode(io.ComfyNode):
         return io.NodeOutput(on_true if switch else on_false)
 
 
+class DynamicSwitchNode(io.ComfyNode):
+    """
+    A switch node with a growing number of input pairs.
+
+    For each slot i, connects on_false_i and on_true_i (both optional).
+    When ``switch`` is True all on_true_i values are forwarded to output_i;
+    when False all on_false_i values are forwarded.
+
+    Each slot pair has its own independent MatchType template so different
+    slots may carry different data types.  Inputs grow as you connect them:
+    the first empty pair at the end acts as the "next available" slot.
+    """
+
+    MAX_SLOTS = 10
+
+    @classmethod
+    def define_schema(cls):
+        inputs = [io.Boolean.Input("switch")]
+        outputs = []
+
+        for i in range(cls.MAX_SLOTS):
+            template = io.MatchType.Template(f"slot_{i}")
+            inputs.append(
+                io.MatchType.Input(f"on_false_{i}", template=template, optional=True, lazy=True)
+            )
+            inputs.append(
+                io.MatchType.Input(f"on_true_{i}", template=template, optional=True, lazy=True)
+            )
+            outputs.append(
+                io.MatchType.Output(template=template, display_name=f"output_{i}")
+            )
+
+        return io.Schema(
+            node_id="ComfyDynamicSwitchNode",
+            display_name="Dynamic Switch",
+            category="logic",
+            is_experimental=True,
+            inputs=inputs,
+            outputs=outputs,
+        )
+
+    @classmethod
+    def check_lazy_status(cls, switch, **kwargs):
+        """Request only the inputs on the active side that haven't been evaluated yet."""
+        needed = []
+        for i in range(cls.MAX_SLOTS):
+            key = f"on_true_{i}" if switch else f"on_false_{i}"
+            # key present with None → connected but not yet evaluated (lazy)
+            if key in kwargs and kwargs[key] is None:
+                needed.append(key)
+        return needed if needed else None
+
+    @classmethod
+    def execute(cls, switch, **kwargs) -> io.NodeOutput:
+        outputs = []
+        for i in range(cls.MAX_SLOTS):
+            key = f"on_true_{i}" if switch else f"on_false_{i}"
+            outputs.append(kwargs.get(key))
+        return io.NodeOutput(*outputs)
+
+
 class CustomComboNode(io.ComfyNode):
     """
     Frontend node that allows user to write their own options for a combo.
@@ -260,6 +321,7 @@ class LogicExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
         return [
             SwitchNode,
+            DynamicSwitchNode,
             CustomComboNode,
             # SoftSwitchNode,
             # ConvertStringToComboNode,
