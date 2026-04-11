@@ -24,11 +24,6 @@ const PIPE_NODES = new Set([
     NODE_PIPE, NODE_OUT, NODE_SET, NODE_REMOVE, NODE_GET, NODE_MERGE,
 ]);
 
-// Set while a workflow is being deserialised; suppresses live reshape so we
-// don't clobber outputs before all upstream links are restored. The
-// `afterConfigureGraph` hook performs a single reconcile pass instead.
-let graphConfiguring = false;
-
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
@@ -364,7 +359,7 @@ app.registerExtension({
         const origConn = nodeType.prototype.onConnectionsChange;
         nodeType.prototype.onConnectionsChange = function (kind, slot, connected, link_info) {
             origConn?.apply(this, arguments);
-            if (graphConfiguring || this.__pipeConfiguring) return;
+            if (app.configuringGraph || this.__pipeConfiguring) return;
             this.__pipeConfiguring = true;
             try {
                 if (nodeData.name === NODE_PIPE && kind === 1) {
@@ -430,12 +425,7 @@ app.registerExtension({
         }
     },
 
-    async beforeConfigureGraph() {
-        graphConfiguring = true;
-    },
-
     async afterConfigureGraph() {
-        graphConfiguring = false;
         // Reconcile pass: recompute manifests from the live graph and warn on
         // drift vs the persisted manifest (e.g. upstream edited externally).
         for (const node of app.graph?._nodes ?? []) {
