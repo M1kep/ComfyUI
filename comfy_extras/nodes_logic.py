@@ -91,6 +91,59 @@ class SoftSwitchNode(io.ComfyNode):
         return io.NodeOutput(on_true if switch else on_false)
 
 
+class PipeNode(io.ComfyNode):
+    """
+    A generic Pipe (passthrough) node with multiple type-matched slots.
+
+    Each slot is an independent input/output pair that adopts the type of
+    whatever is connected to it. Types are resolved by the frontend via
+    io.MatchType on connect and reset on disconnect, so you can route any
+    mix of types through a single node without manual conversion.
+    """
+
+    NUM_SLOTS = 5
+
+    @classmethod
+    def define_schema(cls):
+        # Each slot uses its own template so its type resolves independently
+        # of the other slots.
+        templates = [
+            io.MatchType.Template(f"pipe_slot_{i}") for i in range(cls.NUM_SLOTS)
+        ]
+        return io.Schema(
+            node_id="Pipe",
+            display_name="Pipe",
+            category="utils",
+            is_experimental=True,
+            inputs=[
+                io.MatchType.Input(
+                    f"slot_{i}",
+                    template=templates[i],
+                    optional=True,
+                )
+                for i in range(cls.NUM_SLOTS)
+            ],
+            outputs=[
+                io.MatchType.Output(
+                    template=templates[i],
+                    display_name=f"slot_{i}",
+                )
+                for i in range(cls.NUM_SLOTS)
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        slot_0=None,
+        slot_1=None,
+        slot_2=None,
+        slot_3=None,
+        slot_4=None,
+    ) -> io.NodeOutput:
+        return io.NodeOutput(slot_0, slot_1, slot_2, slot_3, slot_4)
+
+
 class CustomComboNode(io.ComfyNode):
     """
     Frontend node that allows user to write their own options for a combo.
@@ -260,6 +313,7 @@ class LogicExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
         return [
             SwitchNode,
+            PipeNode,
             CustomComboNode,
             # SoftSwitchNode,
             # ConvertStringToComboNode,
