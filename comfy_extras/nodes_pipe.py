@@ -89,15 +89,21 @@ class Pipe:
     DESCRIPTION = "Bundle multiple named values into a single PIPE wire."
 
     @classmethod
-    def VALIDATE_INPUTS(cls, input_types, _manifest="[]"):
+    def VALIDATE_INPUTS(cls, input_types, _manifest="[]", **kwargs):
         entries = _parse_manifest(_manifest)
         err = _check_duplicates(entries, "Pipe")
         if err:
             return err
         for e in entries:
-            received = input_types.get(e["name"])
+            name = e["name"]
+            if name not in kwargs and name not in input_types:
+                return (
+                    f"Pipe: manifest declares key '{name}' but no input is connected "
+                    f"(workflow JSON may be stale)"
+                )
+            received = input_types.get(name)
             if received is not None and e["type"] not in ("*", received):
-                return f"Pipe: key '{e['name']}' declared as '{e['type']}' but connected to '{received}'"
+                return f"Pipe: key '{name}' declared as '{e['type']}' but connected to '{received}'"
         return True
 
     def make_pipe(self, _manifest="[]", **kwargs):

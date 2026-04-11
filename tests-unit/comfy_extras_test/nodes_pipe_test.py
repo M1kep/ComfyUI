@@ -74,6 +74,81 @@ class TestPipe:
         m = manifest(("a", "*"))
         assert Pipe.VALIDATE_INPUTS({"a": "MODEL"}, m) is True
 
+    def test_validate_kwargs_literal_counts_as_connection(self):
+        """Linked-but-not-resolved inputs arrive in kwargs, not input_types."""
+        m = manifest(("a", "INT"))
+        assert Pipe.VALIDATE_INPUTS({}, m, a=None) is True
+
+    def test_validate_manifest_key_not_connected(self):
+        m = manifest(("model", "MODEL"), ("clip", "CLIP"))
+        err = Pipe.VALIDATE_INPUTS({"model": "MODEL"}, m)
+        assert "clip" in err
+        assert "no input is connected" in err
+
+    def test_validate_manifest_key_connected_via_kwargs(self):
+        m = manifest(("model", "MODEL"), ("clip", "CLIP"))
+        assert Pipe.VALIDATE_INPUTS({"model": "MODEL"}, m, clip=None) is True
+
+
+class TestPipeInputDispatch:
+    """Simulates execution.py's get_input_data filtering for Pipe source.
+
+    The backend Pipe node declares only ``_manifest`` in INPUT_TYPES, but
+    arbitrary *linked* input names (e.g. "model", "clip") must be forwarded
+    to ``make_pipe`` as kwargs. This mirrors the logic at
+    execution.py:162-184 so the contract is verified without running a full
+    prompt through the server.
+    """
+
+    @staticmethod
+    def _simulate_get_input_data(node_class, prompt_inputs, upstream_values):
+        """Reproduce the slice of get_input_data at execution.py:162-184.
+
+        Inlined to avoid the torch dep pulled in by comfy_execution.graph.
+        Mirror: linked inputs pass through unconditionally; literal inputs are
+        kept only if the name is declared in required/optional.
+        """
+        schema = node_class.INPUT_TYPES()
+        declared = set(schema.get("required", {})) | set(schema.get("optional", {}))
+        input_data_all = {}
+        for x, v in prompt_inputs.items():
+            is_link = isinstance(v, list) and len(v) == 2
+            info = schema.get("required", {}).get(x) or schema.get("optional", {}).get(x)
+            raw_link = isinstance(info, tuple) and len(info) > 1 and info[1].get("rawLink", False)
+            if is_link and not raw_link:
+                input_data_all[x] = upstream_values[tuple(v)]
+            elif x in declared:
+                input_data_all[x] = [v]
+        return input_data_all
+
+    def test_undeclared_linked_inputs_forwarded_to_make_pipe(self):
+        m = manifest(("model", "MODEL"), ("clip", "CLIP"))
+        prompt_inputs = {
+            "_manifest": m,
+            "model": ["upstream_model", 0],
+            "clip": ["upstream_clip", 0],
+        }
+        upstream = {
+            ("upstream_model", 0): "MODEL_OBJ",
+            ("upstream_clip", 0): "CLIP_OBJ",
+        }
+        filtered = self._simulate_get_input_data(Pipe, prompt_inputs, upstream)
+        assert "model" in filtered and "clip" in filtered
+
+        call_args = {k: (v[0] if isinstance(v, list) else v) for k, v in filtered.items()}
+        (pv,) = Pipe().make_pipe(**call_args)
+        assert pv.values == {"model": "MODEL_OBJ", "clip": "CLIP_OBJ"}
+        assert pv.manifest == {"model": "MODEL", "clip": "CLIP"}
+
+    def test_undeclared_literal_inputs_dropped(self):
+        m = manifest(("a", "INT"))
+        prompt_inputs = {"_manifest": m, "a": 42}
+        filtered = self._simulate_get_input_data(Pipe, prompt_inputs, {})
+        assert "a" not in filtered, (
+            "Literal (non-linked) undeclared inputs are dropped by get_input_data; "
+            "the frontend must always materialise Pipe inputs as links."
+        )
+
 
 # --- PipeOut ---------------------------------------------------------------
 
