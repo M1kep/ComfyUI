@@ -513,6 +513,123 @@ test.describe('Pipe nodes (frontend)', () => {
     for (const o of refreshed!.keyOutputs) expect(o.type).toBe('STRING')
   })
 
+  test('manifest walk does not hang on a PIPE cycle', async ({
+    pipePage: page
+  }) => {
+    const pipeId = await addNode(page, 'PipeCreate')
+    const setId = await addNode(page, 'PipeSet')
+    const out1 = await addNode(page, 'PipeOut')
+
+    // Create a cycle: PipeCreate → PipeSet → PipeOut.passthrough → back into
+    // PipeSet.pipe (replacing the original link). The seen-set guard in
+    // computeManifest must terminate the walk.
+    await connect(page, pipeId, 0, setId, await slotIndex(page, setId, 'pipe'))
+    await connect(page, setId, 0, out1, await slotIndex(page, out1, 'pipe'))
+    await connect(page, out1, await outSlot(page, out1, 'pipe'), setId, await slotIndex(page, setId, 'pipe'))
+
+    // If this returns at all, the guard works.
+    const m = (await nodeInfo(page, out1))!.manifest
+    expect(Array.isArray(m)).toBe(true)
+  })
+
+  test('two PipeOuts on the same PipeCreate both reshape on upstream change', async ({
+    pipePage: page
+  }) => {
+    const sA = await addNode(page, 'PrimitiveString')
+    const sB = await addNode(page, 'PrimitiveString')
+    const pipeId = await addNode(page, 'PipeCreate')
+    const outA = await addNode(page, 'PipeOut')
+    const outB = await addNode(page, 'PipeOut')
+
+    await connect(page, sA, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    await connect(page, pipeId, 0, outA, await slotIndex(page, outA, 'pipe'))
+    await connect(page, pipeId, 0, outB, await slotIndex(page, outB, 'pipe'))
+    expect((await nodeInfo(page, outA))!.keyOutputs).toHaveLength(1)
+    expect((await nodeInfo(page, outB))!.keyOutputs).toHaveLength(1)
+
+    await connect(page, sB, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    expect((await nodeInfo(page, outA))!.keyOutputs).toHaveLength(2)
+    expect((await nodeInfo(page, outB))!.keyOutputs).toHaveLength(2)
+  })
+
+  test('PipeSet retyping a key drops a downstream wire of the old type', async ({
+    pipePage: page
+  }) => {
+    const sStr = await addNode(page, 'PrimitiveString')
+    const sInt = await addNode(page, 'PrimitiveInt')
+    const pipeId = await addNode(page, 'PipeCreate')
+    const setId = await addNode(page, 'PipeSet')
+    const outId = await addNode(page, 'PipeOut')
+    const sink = await addNode(page, 'PrimitiveString') // expects STRING in
+
+    await connect(page, sStr, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    const key = ((await nodeInfo(page, pipeId))!.manifest as [string, string][])[0][0]
+    await connect(page, pipeId, 0, setId, await slotIndex(page, setId, 'pipe'))
+    await setWidget(page, setId, 'key', key)
+    await connect(page, sStr, 0, setId, await slotIndex(page, setId, 'value'))
+    await connect(page, setId, 0, outId, await slotIndex(page, outId, 'pipe'))
+
+    // Wire the STRING-typed key output into a STRING sink.
+    await connect(page, outId, await outSlot(page, outId, key), sink, await slotIndex(page, sink, 'value'))
+    expect((await nodeInfo(page, outId))!.keyOutputs[0]).toMatchObject({
+      name: key, type: 'STRING', linkCount: 1
+    })
+
+    // Now retype via PipeSet by replacing value with an INT.
+    await connect(page, sInt, 0, setId, await slotIndex(page, setId, 'value'))
+    const after = (await nodeInfo(page, outId))!.keyOutputs[0]
+    expect(after.type).toBe('INT')
+    expect(after.linkCount).toBe(0) // STRING sink wire dropped
+  })
+
+  test('PipeSet with a PIPE value carries its nested manifest', async ({
+    pipePage: page
+  }) => {
+    const sA = await addNode(page, 'PrimitiveString')
+    const inner = await addNode(page, 'PipeCreate')
+    const outer = await addNode(page, 'PipeCreate')
+    const setId = await addNode(page, 'PipeSet')
+    const out1 = await addNode(page, 'PipeOut')
+    const out2 = await addNode(page, 'PipeOut')
+
+    await connect(page, sA, 0, inner, await slotIndex(page, inner, '+'))
+    await connect(page, outer, 0, setId, await slotIndex(page, setId, 'pipe'))
+    await setWidget(page, setId, 'key', 'bundle')
+    await connect(page, inner, 0, setId, await slotIndex(page, setId, 'value'))
+    await connect(page, setId, 0, out1, await slotIndex(page, out1, 'pipe'))
+
+    expect((await nodeInfo(page, out1))!.keyOutputs[0])
+      .toMatchObject({ name: 'bundle', type: 'PIPE' })
+
+    // The nested manifest is reachable via the PIPE-typed output.
+    await connect(page, out1, await outSlot(page, out1, 'bundle'), out2, await slotIndex(page, out2, 'pipe'))
+    expect((await nodeInfo(page, out2))!.keyOutputs).toHaveLength(1)
+    expect((await nodeInfo(page, out2))!.keyOutputs[0].type).toBe('STRING')
+  })
+
+  test('PipeMerge with both inputs from the same PipeCreate (diamond) is stable', async ({
+    pipePage: page
+  }) => {
+    const sA = await addNode(page, 'PrimitiveString')
+    const sB = await addNode(page, 'PrimitiveString')
+    const pipeId = await addNode(page, 'PipeCreate')
+    const merge = await addNode(page, 'PipeMerge')
+    const out = await addNode(page, 'PipeOut')
+
+    await connect(page, sA, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    await connect(page, sB, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    const keys = ((await nodeInfo(page, pipeId))!.manifest as [string, string][])
+      .map(([k]) => k)
+
+    await connect(page, pipeId, 0, merge, await slotIndex(page, merge, 'a'))
+    await connect(page, pipeId, 0, merge, await slotIndex(page, merge, 'b'))
+    await connect(page, merge, 0, out, await slotIndex(page, out, 'pipe'))
+
+    // Both branches reach the same source; merged manifest = source keys.
+    expect((await nodeInfo(page, out))!.keyOutputs.map((o) => o.name))
+      .toEqual(keys)
+  })
+
   test('PipeMerge unions manifests with the chosen collision policy', async ({
     pipePage: page
   }) => {
