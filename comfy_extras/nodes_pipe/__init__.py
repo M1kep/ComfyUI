@@ -8,11 +8,13 @@ ANY = "*"
 
 class _UnboundedTypeList(list):
     """RETURN_TYPES helper that yields ``*`` for any out-of-range index so
-    downstream type validation accepts dynamically-added output slots."""
+    downstream type validation accepts dynamically-added output slots.
+
+    Relies on the executor only ever doing ``RETURN_TYPES[i]`` with ``i >= 0``
+    (see execution.py validate_inputs) and ``len()`` (see server.py
+    object_info); both behave normally."""
 
     def __getitem__(self, i):
-        if isinstance(i, slice):
-            return list.__getitem__(self, i)
         if isinstance(i, int) and (i >= len(self) or i < -len(self)):
             return ANY
         return list.__getitem__(self, i)
@@ -97,7 +99,13 @@ def _require_pipe(pipe, node_name):
     return pipe
 
 
-def _check_type(node_name, key, expected, actual):
+def _require_key(pipe, key, node_name, expected=None):
+    if key not in pipe.values:
+        raise PipeError(
+            f"{node_name}: key '{key}' not present in pipe "
+            f"(have: {sorted(pipe.keys())})"
+        )
+    actual = pipe.types.get(key)
     if expected in (None, "", ANY) or actual in (None, "", ANY):
         return
     if expected != actual:
@@ -172,12 +180,7 @@ class PipeOut:
             manifest = pipe.manifest()
         out = [pipe]
         for key, expected in manifest:
-            if key not in pipe.values:
-                raise PipeError(
-                    f"Pipe Out: key '{key}' not present in pipe "
-                    f"(have: {sorted(pipe.keys())})"
-                )
-            _check_type("Pipe Out", key, expected, pipe.types.get(key))
+            _require_key(pipe, key, "Pipe Out", expected)
             out.append(pipe.values[key])
         return tuple(out)
 
@@ -205,6 +208,8 @@ class PipeSet:
     def VALIDATE_INPUTS(cls, key="", **_):
         if not key:
             return "Pipe Set: key must not be empty"
+        if key == "pipe":
+            return "Pipe Set: 'pipe' is reserved (Pipe Out passthrough output)"
         return True
 
     def execute(self, pipe, key, value, _value_type: str = ANY):
@@ -229,11 +234,7 @@ class PipeRemove:
 
     def execute(self, pipe, key):
         pipe = _require_pipe(pipe, "Pipe Remove")
-        if key not in pipe.values:
-            raise PipeError(
-                f"Pipe Remove: key '{key}' not present in pipe "
-                f"(have: {sorted(pipe.keys())})"
-            )
+        _require_key(pipe, key, "Pipe Remove")
         return (pipe.without(key),)
 
 
@@ -257,12 +258,7 @@ class PipeGet:
 
     def execute(self, pipe, key, _value_type: str = ANY):
         pipe = _require_pipe(pipe, "Pipe Get")
-        if key not in pipe.values:
-            raise PipeError(
-                f"Pipe Get: key '{key}' not present in pipe "
-                f"(have: {sorted(pipe.keys())})"
-            )
-        _check_type("Pipe Get", key, _value_type, pipe.types.get(key))
+        _require_key(pipe, key, "Pipe Get", _value_type)
         return (pipe.values[key],)
 
 
@@ -313,12 +309,7 @@ class PipePick:
         pipe = _require_pipe(pipe, "Pipe Pick")
         out = [pipe]
         for key, expected in _parse_manifest(_manifest):
-            if key not in pipe.values:
-                raise PipeError(
-                    f"Pipe Pick: key '{key}' not present in pipe "
-                    f"(have: {sorted(pipe.keys())})"
-                )
-            _check_type("Pipe Pick", key, expected, pipe.types.get(key))
+            _require_key(pipe, key, "Pipe Pick", expected)
             out.append(pipe.values[key])
         return tuple(out)
 

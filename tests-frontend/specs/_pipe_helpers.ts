@@ -12,7 +12,7 @@
 import type { Page, APIRequestContext } from '@playwright/test'
 import { test as base } from '@playwright/test'
 
-const URL = process.env.PLAYWRIGHT_TEST_URL ?? 'http://localhost:8188'
+const BASE_URL = process.env.PLAYWRIGHT_TEST_URL ?? 'http://localhost:8188'
 
 export const pipeTest = base.extend<
   { pipePage: Page },
@@ -28,24 +28,21 @@ export const pipeTest = base.extend<
         page.request,
         `pipe-spec-${workerInfo.parallelIndex}`
       )
-      await page.request.post(`${URL}/api/devtools/set_settings`, {
+      await page.request.post(`${BASE_URL}/api/devtools/set_settings`, {
         data: {
-          'Comfy.UseNewMenu': 'Top',
-          'Comfy.Graph.CanvasInfo': false,
-          'Comfy.Graph.CanvasMenu': false,
-          'Comfy.Canvas.SelectionToolbox': false,
-          'Comfy.EnableTooltips': false,
           'Comfy.userId': userId,
+          // Only the settings that gate modal dialogs which would block
+          // page.evaluate; the rest of the ComfyPage defaults are
+          // screenshot-stability knobs these specs don't need.
           'Comfy.TutorialCompleted': true,
-          'Comfy.VersionCompatibility.DisableWarnings': true,
-          'Comfy.RightSidePanel.ShowErrorsTab': false
+          'Comfy.VersionCompatibility.DisableWarnings': true
         }
       })
 
       await page.addInitScript((id) => {
         localStorage.setItem('Comfy.userId', id)
       }, userId)
-      await page.goto(URL)
+      await page.goto(BASE_URL)
       await page.waitForFunction(
         () => (window as any).app && (window as any).app.extensionManager
       )
@@ -62,11 +59,11 @@ export const pipeTest = base.extend<
 })
 
 async function ensureUser(request: APIRequestContext, name: string) {
-  const res = await request.get(`${URL}/api/users`)
+  const res = await request.get(`${BASE_URL}/api/users`)
   const users = (await res.json())?.users ?? {}
   const found = Object.entries(users).find(([, n]) => n === name)
   if (found) return found[0]
-  const created = await request.post(`${URL}/api/users`, { data: { username: name } })
+  const created = await request.post(`${BASE_URL}/api/users`, { data: { username: name } })
   return await created.json()
 }
 

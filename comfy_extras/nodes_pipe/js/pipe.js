@@ -216,21 +216,19 @@ function pipeCreateSync(node) {
     const manifest = [];
     for (const inp of node.inputs ?? []) {
         if (!isPipeSlot(inp) || inp.link == null) continue;
-        const t = inp.type === ANY_TYPE ? ANY_TYPE : inp.type;
         let nested = null;
-        if (t === PIPE_TYPE) {
+        if (inp.type === PIPE_TYPE) {
             const link = getGraph(node)?.links?.[inp.link];
             const src = link && getGraph(node)?.getNodeById?.(link.origin_id);
             if (src) nested = manifestOfOutput(src, link.origin_slot, new Set());
         }
-        manifest.push(entryFor(inp.name, t, nested));
+        manifest.push(entryFor(inp.name, inp.type, nested));
     }
     const last = trailing >= 0 ? node.inputs[trailing] : null;
     if (!last || last.link != null || isDeclared(node, last)) {
         node.addInput("+", ANY_TYPE);
     }
-    node.properties.pipe_manifest = manifest;
-    setWidget(node, "_manifest", JSON.stringify(manifest));
+    commitManifest(node, manifest);
 }
 
 function pipeCreateOnConnect(node, slotIndex, link_info) {
@@ -336,12 +334,54 @@ function pipeCreateMenu(node, options) {
 // PipeOut: dynamic outputs
 // ---------------------------------------------------------------------------
 
-function pipeOutReshape(node, manifest) {
-    const prev = node.properties.pipe_manifest ?? [];
+function commitManifest(node, manifest) {
     node.properties.pipe_manifest = manifest;
     setWidget(node, "_manifest", JSON.stringify(manifest));
+}
 
-    // Slot 0 is the PIPE passthrough; manifest keys live at 1+.
+// Rebuild a node's outputs to match `want` (list of [name, type]) while
+// preserving downstream links by output name. If multiple `want` entries share
+// a name with old outputs, links are matched positionally within that name so
+// duplicates don't all collapse onto the first slot.
+function rebuildOutputs(node, want) {
+    if ((node.outputs?.length ?? 0) === want.length
+            && want.every(([k, t], i) =>
+                node.outputs[i]?.name === k && node.outputs[i]?.type === t)) {
+        return;
+    }
+    const graph = getGraph(node);
+    const old = (node.outputs ?? []).map((o) => ({
+        name: o.name,
+        type: o.type,
+        links: (o.links ?? []).map((lid) => {
+            const l = graph?.links?.[lid];
+            return l && { target_id: l.target_id, target_slot: l.target_slot };
+        }).filter(Boolean),
+    }));
+    while (node.outputs?.length) node.removeOutput(0);
+    for (const [k, t] of want) node.addOutput(k, t);
+
+    const used = new Set();
+    for (let i = 0; i < want.length; i++) {
+        const [name, type] = want[i];
+        const j = old.findIndex((o, idx) => o.name === name && !used.has(idx));
+        if (j < 0) continue;
+        used.add(j);
+        for (const l of old[j].links) {
+            const target = graph?.getNodeById?.(l.target_id);
+            const tslot = target?.inputs?.[l.target_slot];
+            if (tslot && (tslot.type === type || tslot.type === ANY_TYPE || type === ANY_TYPE)) {
+                node.connect(i, target, l.target_slot);
+            }
+        }
+    }
+    node.setSize(node.computeSize());
+}
+
+function pipeOutReshape(node, manifest) {
+    const prev = node.properties.pipe_manifest ?? [];
+    commitManifest(node, manifest);
+
     const want = [["pipe", PIPE_TYPE], ...manifest.map(([k, t]) => [k, t])];
 
     // Manifest unchanged: outputs are already in the right positions, but
@@ -355,39 +395,7 @@ function pipeOutReshape(node, manifest) {
         }
         return;
     }
-
-    // Snapshot existing downstream link targets by key name so we can
-    // reattach after rebuilding outputs (link objects are freed on remove).
-    const graph = getGraph(node);
-    const oldLinks = {};
-    for (const out of node.outputs ?? []) {
-        for (const lid of out.links ?? []) {
-            const l = graph?.links?.[lid];
-            if (l) {
-                (oldLinks[out.name] ??= []).push({
-                    target_id: l.target_id, target_slot: l.target_slot,
-                });
-            }
-        }
-    }
-    while (node.outputs?.length) node.removeOutput(0);
-
-    for (const [key, type] of want) {
-        node.addOutput(key, type);
-    }
-
-    // Reattach links whose key+type still match.
-    for (let i = 0; i < want.length; i++) {
-        const [key, type] = want[i];
-        for (const l of oldLinks[key] ?? []) {
-            const target = graph?.getNodeById?.(l.target_id);
-            const tslot = target?.inputs?.[l.target_slot];
-            if (tslot && (tslot.type === type || tslot.type === ANY_TYPE || type === ANY_TYPE)) {
-                node.connect(i, target, l.target_slot);
-            }
-        }
-    }
-    node.setSize(node.computeSize());
+    rebuildOutputs(node, want);
 }
 
 function pipeGetReshape(node, manifest) {
@@ -424,25 +432,21 @@ function refreshNode(node, seen) {
     const type = node.type ?? node.comfyClass;
     if (type === NODE_OUT) {
         pipeOutReshape(node, computeManifest(node, "pipe"));
-        refreshDownstream(node, seen);
     } else if (type === NODE_PICK) {
         pipePickRefresh(node);
-        refreshDownstream(node, seen);
     } else if (type === NODE_GET) {
         pipeGetReshape(node, computeManifest(node, "pipe"));
-        refreshDownstream(node, seen);
     } else if (type === NODE_PIPE) {
         // A PIPE wired into another PipeCreate (pipe-in-pipe): re-snapshot the
         // nested manifest so the OUTER pipe's stored manifest stays in sync
         // with later edits to the inner one.
         pipeCreateSync(node);
-        refreshDownstream(node, seen);
-    } else if (type === NODE_REMOVE || type === NODE_SET || type === NODE_MERGE) {
-        if (type === NODE_REMOVE) {
-            populateKeyDropdown(node, computeManifest(node, "pipe"));
-        }
-        refreshDownstream(node, seen);
+    } else if (type === NODE_REMOVE) {
+        populateKeyDropdown(node, computeManifest(node, "pipe"));
+    } else if (type !== NODE_SET && type !== NODE_MERGE) {
+        return;
     }
+    refreshDownstream(node, seen);
 }
 
 function refreshDownstream(node, seen) {
@@ -469,10 +473,15 @@ function refreshDownstream(node, seen) {
 // ---------------------------------------------------------------------------
 
 function pipePickKeys(node) {
-    return (node.widgets ?? [])
-        .filter((w) => w.name?.startsWith("key_"))
-        .map((w) => w.value)
-        .filter((v) => v);
+    const seen = new Set();
+    const keys = [];
+    for (const w of node.widgets ?? []) {
+        if (!w.name?.startsWith("key_") || !w.value) continue;
+        if (seen.has(w.value)) continue;
+        seen.add(w.value);
+        keys.push(w.value);
+    }
+    return keys;
 }
 
 function pipePickAddCombo(node, value) {
@@ -499,8 +508,7 @@ function pipePickSync(node) {
         });
 
     node.properties.pipe_pick_keys = keys;
-    node.properties.pipe_manifest = selected;
-    setWidget(node, "_manifest", JSON.stringify(selected));
+    commitManifest(node, selected);
 
     // Ensure exactly one trailing blank combo for the next pick.
     const combos = (node.widgets ?? []).filter((w) => w.name?.startsWith("key_"));
@@ -513,29 +521,7 @@ function pipePickSync(node) {
         if (c.name?.startsWith("key_")) c.options = { ...c.options, values: opts };
     }
 
-    // Reshape outputs: passthrough + one per selected key.
-    const want = [["pipe", PIPE_TYPE], ...selected.map(([k, t]) => [k, t])];
-    if ((node.outputs?.length ?? 0) !== want.length
-            || want.some(([k, t], i) => node.outputs[i]?.name !== k || node.outputs[i]?.type !== t)) {
-        const graph = getGraph(node);
-        const old = (node.outputs ?? []).map((o) => ({
-            name: o.name,
-            links: (o.links ?? []).map((lid) => {
-                const l = graph?.links?.[lid];
-                return l && { target_id: l.target_id, target_slot: l.target_slot };
-            }).filter(Boolean),
-        }));
-        while (node.outputs?.length) node.removeOutput(0);
-        for (const [k, t] of want) node.addOutput(k, t);
-        for (let i = 0; i < want.length; i++) {
-            const prev = old.find((o) => o.name === want[i][0]);
-            for (const l of prev?.links ?? []) {
-                const target = graph?.getNodeById?.(l.target_id);
-                if (target) node.connect(i, target, l.target_slot);
-            }
-        }
-    }
-    node.setSize(node.computeSize());
+    rebuildOutputs(node, [["pipe", PIPE_TYPE], ...selected.map(([k, t]) => [k, t])]);
 }
 
 function pipePickRefresh(node) {

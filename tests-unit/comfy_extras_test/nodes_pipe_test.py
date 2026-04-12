@@ -123,8 +123,9 @@ def test_pipe_set_adds_and_replaces():
     assert p.values == {"a": 1}  # original untouched
 
 
-def test_pipe_set_validate_rejects_empty_key():
+def test_pipe_set_validate_rejects_empty_and_reserved_key():
     assert PipeSet.VALIDATE_INPUTS(key="") != True  # noqa: E712
+    assert PipeSet.VALIDATE_INPUTS(key="pipe") != True  # noqa: E712
     assert PipeSet.VALIDATE_INPUTS(key="a") is True
 
 
