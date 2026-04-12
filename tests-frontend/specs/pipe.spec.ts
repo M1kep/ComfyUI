@@ -180,6 +180,38 @@ test.describe('Pipe nodes (frontend)', () => {
     expect(out!.outputs[0]).toMatchObject({ name: 'pipe', type: 'PIPE' })
   })
 
+  test('PipeRemove fed by a PipeOut passthrough resolves the upstream manifest', async ({
+    pipePage: page
+  }) => {
+    const sA = await addNode(page, 'PrimitiveString')
+    const sB = await addNode(page, 'PrimitiveString')
+    const pipeId = await addNode(page, 'PipeCreate')
+    const out1 = await addNode(page, 'PipeOut')
+    const rmId = await addNode(page, 'PipeRemove')
+    const out2 = await addNode(page, 'PipeOut')
+
+    await connect(page, sA, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    await connect(page, sB, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    const keys = ((await nodeInfo(page, pipeId))!.manifest as [string, string][])
+      .map(([k]) => k)
+
+    await connect(page, pipeId, 0, out1, await slotIndex(page, out1, 'pipe'))
+    await connect(page, out1, await outSlot(page, out1, 'pipe'), rmId, await slotIndex(page, rmId, 'pipe'))
+
+    // PipeRemove's dropdown should offer the upstream keys via the passthrough.
+    const rmOpts = await page.evaluate((id) => {
+      const w = window.app!.graph.getNodeById(id)!.widgets!
+        .find((w) => w.name === 'key')!
+      return (w.options as any)?.values
+    }, rmId)
+    expect(rmOpts).toEqual(keys)
+
+    await setWidget(page, rmId, 'key', keys[0])
+    await connect(page, rmId, 0, out2, await slotIndex(page, out2, 'pipe'))
+    expect((await nodeInfo(page, out2))!.keyOutputs.map((o) => o.name))
+      .toEqual([keys[1]])
+  })
+
   test('PipeOut passthrough carries the same manifest into a downstream PipeOut', async ({
     pipePage: page
   }) => {

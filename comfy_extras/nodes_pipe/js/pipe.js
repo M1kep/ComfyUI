@@ -515,10 +515,15 @@ function pipePickSync(node) {
     if (!combos.length || combos[combos.length - 1].value) {
         pipePickAddCombo(node, "");
     }
-    // Refresh dropdown options on every combo.
-    const opts = ["", ...manifestKeys(upstream)];
+    // Refresh dropdown options on every combo (preserve a stale selected
+    // value so a workflow with a now-missing upstream key still shows it).
+    const baseOpts = ["", ...manifestKeys(upstream)];
     for (const c of (node.widgets ?? [])) {
-        if (c.name?.startsWith("key_")) c.options = { ...c.options, values: opts };
+        if (!c.name?.startsWith("key_")) continue;
+        const opts = c.value && !baseOpts.includes(c.value)
+            ? [...baseOpts, c.value]
+            : baseOpts;
+        c.options = { ...c.options, values: opts };
     }
 
     rebuildOutputs(node, [["pipe", PIPE_TYPE], ...selected.map(([k, t]) => [k, t])]);

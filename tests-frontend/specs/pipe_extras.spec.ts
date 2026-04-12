@@ -15,6 +15,58 @@ import {
 } from './_pipe_helpers'
 
 test.describe('Pipe Pick', () => {
+  test('picking the same key twice yields a single output', async ({
+    pipePage: page
+  }) => {
+    const sA = await addNode(page, 'PrimitiveString')
+    const sB = await addNode(page, 'PrimitiveString')
+    const pipeId = await addNode(page, 'PipeCreate')
+    const pickId = await addNode(page, 'PipePick')
+
+    await connect(page, sA, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    await connect(page, sB, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    const keys = ((await nodeInfo(page, pipeId))!.manifest as [string, string][])
+      .map(([k]) => k)
+    await connect(page, pipeId, 0, pickId, await slotIndex(page, pickId, 'pipe'))
+
+    await setWidget(page, pickId, 'key_1', keys[0])
+    await setWidget(page, pickId, 'key_2', keys[0]) // duplicate
+
+    const out = await nodeInfo(page, pickId)
+    expect(out!.outputs.map((o) => o.name)).toEqual(['pipe', keys[0]])
+  })
+
+  test('a picked key that vanishes upstream stays in the dropdown but goes ANY-typed', async ({
+    pipePage: page
+  }) => {
+    const sA = await addNode(page, 'PrimitiveString')
+    const pipeId = await addNode(page, 'PipeCreate')
+    const pickId = await addNode(page, 'PipePick')
+
+    await connect(page, sA, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    const key = ((await nodeInfo(page, pipeId))!.manifest as [string, string][])[0][0]
+    await connect(page, pipeId, 0, pickId, await slotIndex(page, pickId, 'pipe'))
+    await setWidget(page, pickId, 'key_1', key)
+
+    // Disconnect upstream so the key disappears from the manifest.
+    await page.evaluate(({ pipeId }) => {
+      const n = window.app!.graph.getNodeById(pipeId)!
+      n.disconnectInput(n.inputs.findIndex((i) => !i.widget && i.link != null))
+    }, { pipeId })
+
+    const out = await nodeInfo(page, pickId)
+    // Output still present (so workflow load doesn't drop wires) but typed *.
+    expect(out!.outputs.map((o) => o.name)).toEqual(['pipe', key])
+    expect(out!.outputs[1].type).toBe('*')
+    // Combo still offers the stale key alongside blank.
+    const opts = await page.evaluate((id) => {
+      const w = window.app!.graph.getNodeById(id)!.widgets!
+        .find((w) => w.name === 'key_1')!
+      return (w.options as any).values
+    }, pickId)
+    expect(opts).toContain(key)
+  })
+
 
   test('grows a key combo per selection and reshapes outputs', async ({
     pipePage: page
