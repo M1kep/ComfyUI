@@ -327,4 +327,127 @@ test.describe('Pipe nodes (frontend)', () => {
       .poll(async () => (await pb.getWidget(0)).getValue(), { timeout: 15_000 })
       .toBe('B')
   })
+
+  test('disconnecting a PipeCreate input prunes the slot and updates manifest downstream', async ({
+    comfyPage
+  }) => {
+    const { page } = comfyPage
+
+    const sA = await addNode(page, 'PrimitiveString')
+    const sB = await addNode(page, 'PrimitiveString')
+    const pipeId = await addNode(page, 'PipeCreate')
+    const outId = await addNode(page, 'PipeOut')
+
+    await connect(page, sA, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    await connect(page, sB, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    await connect(page, pipeId, 0, outId, await slotIndex(page, outId, 'pipe'))
+
+    expect((await nodeInfo(page, outId))!.outputs).toHaveLength(2)
+
+    // Disconnect sA from the pipe.
+    await page.evaluate(({ pipeId }) => {
+      const n = window.app!.graph.getNodeById(pipeId)!
+      const idx = n.inputs.findIndex((i) => !i.widget && i.link != null)
+      n.disconnectInput(idx)
+    }, { pipeId })
+
+    const after = await nodeInfo(page, pipeId)
+    // One linked + one trailing "+" remain; the disconnected slot is pruned.
+    expect(after!.inputs.filter((i) => i.linked)).toHaveLength(1)
+    expect(after!.inputs).toHaveLength(2)
+    expect((after!.manifest as unknown[]).length).toBe(1)
+    // Downstream PipeOut reshaped to one output.
+    expect((await nodeInfo(page, outId))!.outputs).toHaveLength(1)
+  })
+
+  test('PipeOut keeps surviving downstream wires when an upstream key is removed', async ({
+    comfyPage
+  }) => {
+    const { page } = comfyPage
+
+    const sA = await addNode(page, 'PrimitiveString')
+    const sB = await addNode(page, 'PrimitiveString')
+    const pipeId = await addNode(page, 'PipeCreate')
+    const outId = await addNode(page, 'PipeOut')
+    const sinkA = await addNode(page, 'PreviewAny')
+    const sinkB = await addNode(page, 'PreviewAny')
+
+    await connect(page, sA, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    await connect(page, sB, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    await connect(page, pipeId, 0, outId, await slotIndex(page, outId, 'pipe'))
+    await connect(page, outId, 0, sinkA, 0)
+    await connect(page, outId, 1, sinkB, 0)
+
+    const before = await nodeInfo(page, outId)
+    expect(before!.outputs.map((o) => o.linkCount)).toEqual([1, 1])
+    const survivorKey = before!.outputs[1].name
+
+    // Disconnect the FIRST upstream key on PipeCreate.
+    await page.evaluate(({ pipeId }) => {
+      const n = window.app!.graph.getNodeById(pipeId)!
+      const idx = n.inputs.findIndex((i) => !i.widget && i.link != null)
+      n.disconnectInput(idx)
+    }, { pipeId })
+
+    const after = await nodeInfo(page, outId)
+    // Only the surviving key remains, and its downstream wire is preserved.
+    expect(after!.outputs).toHaveLength(1)
+    expect(after!.outputs[0].name).toBe(survivorKey)
+    expect(after!.outputs[0].linkCount).toBe(1)
+    // sinkA's input link is dropped (its key vanished).
+    const sinkAInfo = await page.evaluate((id) => {
+      const n = window.app!.graph.getNodeById(id)!
+      return n.inputs[0].link
+    }, sinkA)
+    expect(sinkAInfo).toBeNull()
+  })
+
+  test('manifest passes through a Reroute node', async ({ comfyPage }) => {
+    const { page } = comfyPage
+
+    const sA = await addNode(page, 'PrimitiveString')
+    const pipeId = await addNode(page, 'PipeCreate')
+    const reroute = await addNode(page, 'Reroute')
+    const outId = await addNode(page, 'PipeOut')
+
+    await connect(page, sA, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    await connect(page, pipeId, 0, reroute, 0)
+    await connect(page, reroute, 0, outId, await slotIndex(page, outId, 'pipe'))
+
+    const out = await nodeInfo(page, outId)
+    expect(out!.outputs).toHaveLength(1)
+    expect(out!.outputs[0].type).toBe('STRING')
+  })
+
+  test('changing the inner pipe propagates to the outer nested manifest', async ({
+    comfyPage
+  }) => {
+    const { page } = comfyPage
+
+    const sA = await addNode(page, 'PrimitiveString')
+    const sB = await addNode(page, 'PrimitiveString')
+    const inner = await addNode(page, 'PipeCreate')
+    const outer = await addNode(page, 'PipeCreate')
+    const outerOut = await addNode(page, 'PipeOut')
+    const innerOut = await addNode(page, 'PipeOut')
+
+    // inner:{a} -> outer -> outerOut[PIPE] -> innerOut
+    await connect(page, sA, 0, inner, await slotIndex(page, inner, '+'))
+    await connect(page, inner, 0, outer, await slotIndex(page, outer, '+'))
+    await connect(page, outer, 0, outerOut, await slotIndex(page, outerOut, 'pipe'))
+    const pipeSlot = (await nodeInfo(page, outerOut))!.outputs.findIndex(
+      (o) => o.type === 'PIPE'
+    )
+    await connect(page, outerOut, pipeSlot, innerOut, await slotIndex(page, innerOut, 'pipe'))
+
+    expect((await nodeInfo(page, innerOut))!.outputs).toHaveLength(1)
+
+    // Now extend INNER with a second key — the chain should propagate so
+    // innerOut grows a second output.
+    await connect(page, sB, 0, inner, await slotIndex(page, inner, '+'))
+
+    const refreshed = await nodeInfo(page, innerOut)
+    expect(refreshed!.outputs).toHaveLength(2)
+    for (const o of refreshed!.outputs) expect(o.type).toBe('STRING')
+  })
 })

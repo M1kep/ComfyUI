@@ -352,8 +352,16 @@ function refreshNode(node, seen) {
     const type = node.type ?? node.comfyClass;
     if (type === NODE_OUT) {
         pipeOutReshape(node, computeManifest(node, "pipe"));
+        refreshDownstream(node, seen);
     } else if (type === NODE_GET) {
         pipeGetReshape(node, computeManifest(node, "pipe"));
+        refreshDownstream(node, seen);
+    } else if (type === NODE_PIPE) {
+        // A PIPE wired into another PipeCreate (pipe-in-pipe): re-snapshot the
+        // nested manifest so the OUTER pipe's stored manifest stays in sync
+        // with later edits to the inner one.
+        pipeCreateSync(node);
+        refreshDownstream(node, seen);
     } else if (type === NODE_REMOVE || type === NODE_SET || type === NODE_MERGE) {
         refreshDownstream(node, seen);
     }
