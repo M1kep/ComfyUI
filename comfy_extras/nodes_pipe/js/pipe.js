@@ -15,13 +15,14 @@ const ANY_TYPE = "*";
 
 const NODE_PIPE = "PipeCreate";
 const NODE_OUT = "PipeOut";
+const NODE_PICK = "PipePick";
 const NODE_SET = "PipeSet";
 const NODE_REMOVE = "PipeRemove";
 const NODE_GET = "PipeGet";
 const NODE_MERGE = "PipeMerge";
 
 const PIPE_NODES = new Set([
-    NODE_PIPE, NODE_OUT, NODE_SET, NODE_REMOVE, NODE_GET, NODE_MERGE,
+    NODE_PIPE, NODE_OUT, NODE_PICK, NODE_SET, NODE_REMOVE, NODE_GET, NODE_MERGE,
 ]);
 
 // ---------------------------------------------------------------------------
@@ -146,10 +147,10 @@ function manifestOfOutput(node, slot, seen) {
         }
         return out;
     }
-    if (type === NODE_OUT || type === NODE_GET) {
+    if (type === NODE_OUT || type === NODE_PICK || type === NODE_GET) {
         const upstream = computeManifest(node, "pipe", seen);
-        // Pipe Out slot 0 is the PIPE passthrough — same manifest as the input.
-        if (type === NODE_OUT && slot === 0) return upstream;
+        // Slot 0 on Pipe Out / Pipe Pick is the PIPE passthrough.
+        if ((type === NODE_OUT || type === NODE_PICK) && slot === 0) return upstream;
         // Other outputs are unpacked entries; if one is itself a PIPE, return
         // its nested manifest so a downstream Pipe Out can reshape correctly.
         const outName = node.outputs?.[slot]?.name;
@@ -371,6 +372,9 @@ function refreshNode(node, seen) {
     if (type === NODE_OUT) {
         pipeOutReshape(node, computeManifest(node, "pipe"));
         refreshDownstream(node, seen);
+    } else if (type === NODE_PICK) {
+        pipePickRefresh(node);
+        refreshDownstream(node, seen);
     } else if (type === NODE_GET) {
         pipeGetReshape(node, computeManifest(node, "pipe"));
         refreshDownstream(node, seen);
@@ -405,6 +409,85 @@ function refreshDownstream(node, seen) {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// PipePick: growing key dropdowns
+// ---------------------------------------------------------------------------
+
+function pipePickKeys(node) {
+    return (node.widgets ?? [])
+        .filter((w) => w.name?.startsWith("key_"))
+        .map((w) => w.value)
+        .filter((v) => v);
+}
+
+function pipePickAddCombo(node, value) {
+    const idx = (node.widgets ?? []).filter((w) => w.name?.startsWith("key_")).length + 1;
+    const upstream = node.properties?.pipe_upstream ?? [];
+    const w = node.addWidget(
+        "combo",
+        `key_${idx}`,
+        value ?? "",
+        () => pipePickSync(node),
+        { values: ["", ...manifestKeys(upstream)] },
+    );
+    w.serialize = false;
+    return w;
+}
+
+function pipePickSync(node) {
+    const upstream = node.properties?.pipe_upstream ?? [];
+    const keys = pipePickKeys(node);
+    const selected = keys
+        .map((k) => {
+            const e = upstream.find(([uk]) => uk === k);
+            return e ? entryFor(k, e[1], nestedOf(e)) : [k, ANY_TYPE];
+        });
+
+    node.properties.pipe_pick_keys = keys;
+    node.properties.pipe_manifest = selected;
+    setWidget(node, "_manifest", JSON.stringify(selected));
+
+    // Ensure exactly one trailing blank combo for the next pick.
+    const combos = (node.widgets ?? []).filter((w) => w.name?.startsWith("key_"));
+    if (!combos.length || combos[combos.length - 1].value) {
+        pipePickAddCombo(node, "");
+    }
+    // Refresh dropdown options on every combo.
+    const opts = ["", ...manifestKeys(upstream)];
+    for (const c of (node.widgets ?? [])) {
+        if (c.name?.startsWith("key_")) c.options = { ...c.options, values: opts };
+    }
+
+    // Reshape outputs: passthrough + one per selected key.
+    const want = [["pipe", PIPE_TYPE], ...selected.map(([k, t]) => [k, t])];
+    if ((node.outputs?.length ?? 0) !== want.length
+            || want.some(([k, t], i) => node.outputs[i]?.name !== k || node.outputs[i]?.type !== t)) {
+        const graph = getGraph(node);
+        const old = (node.outputs ?? []).map((o) => ({
+            name: o.name,
+            links: (o.links ?? []).map((lid) => {
+                const l = graph?.links?.[lid];
+                return l && { target_id: l.target_id, target_slot: l.target_slot };
+            }).filter(Boolean),
+        }));
+        while (node.outputs?.length) node.removeOutput(0);
+        for (const [k, t] of want) node.addOutput(k, t);
+        for (let i = 0; i < want.length; i++) {
+            const prev = old.find((o) => o.name === want[i][0]);
+            for (const l of prev?.links ?? []) {
+                const target = graph?.getNodeById?.(l.target_id);
+                if (target) node.connect(i, target, l.target_slot);
+            }
+        }
+    }
+    node.setSize(node.computeSize());
+}
+
+function pipePickRefresh(node) {
+    node.properties.pipe_upstream = computeManifest(node, "pipe");
+    pipePickSync(node);
 }
 
 // ---------------------------------------------------------------------------
@@ -457,6 +540,11 @@ app.registerExtension({
 
             if (nodeData.name === NODE_PIPE) {
                 pipeCreateSync(this);
+            } else if (nodeData.name === NODE_PICK) {
+                this.properties.pipe_upstream = [];
+                this.properties.pipe_pick_keys = [];
+                pipePickAddCombo(this, "");
+                pipePickSync(this);
             }
         };
 
@@ -471,6 +559,13 @@ app.registerExtension({
             }
             if (nodeData.name === NODE_PIPE) {
                 pipeCreateSync(this);
+            } else if (nodeData.name === NODE_PICK) {
+                // Restore the dynamic combos from persisted keys.
+                const keys = this.properties?.pipe_pick_keys ?? [];
+                this.widgets = (this.widgets ?? [])
+                    .filter((w) => !w.name?.startsWith("key_"));
+                for (const k of keys) pipePickAddCombo(this, k);
+                pipePickSync(this);
             }
         };
 
@@ -498,7 +593,8 @@ app.registerExtension({
                     }
                     refreshDownstream(this);
                 } else if (
-                    (nodeData.name === NODE_OUT || nodeData.name === NODE_GET)
+                    (nodeData.name === NODE_OUT || nodeData.name === NODE_PICK
+                        || nodeData.name === NODE_GET)
                     && kind === 1 && this.inputs?.[slot]?.name === "pipe"
                 ) {
                     refreshNode(this);
@@ -576,6 +672,8 @@ app.registerExtension({
                 }
                 if (type === NODE_OUT) pipeOutReshape(node, fresh);
                 else pipeGetReshape(node, fresh);
+            } else if (type === NODE_PICK) {
+                pipePickRefresh(node);
             } else if (type === NODE_REMOVE) {
                 populateKeyDropdown(node, computeManifest(node, "pipe"));
             }

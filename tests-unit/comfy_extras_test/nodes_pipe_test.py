@@ -8,6 +8,7 @@ from comfy_extras.nodes_pipe import (
     PipeGet,
     PipeMerge,
     PipeOut,
+    PipePick,
     PipeRemove,
     PipeSet,
     PipeValue,
@@ -141,6 +142,28 @@ def test_pipe_get():
         PipeGet().execute(p, "b")
     with pytest.raises(PipeError, match="expected type MODEL"):
         PipeGet().execute(p, "a", _value_type="MODEL")
+
+
+# ---------------------------------------------------------------------------
+# PipePick
+# ---------------------------------------------------------------------------
+
+def test_pipe_pick_selected_subset():
+    p = PipeValue({"a": 1, "b": 2, "c": 3}, {"a": "INT", "b": "INT", "c": "INT"})
+    out = PipePick().execute(p, _manifest=json.dumps([["c", "INT"], ["a", "INT"]]))
+    assert out[0] is p
+    assert out[1:] == (3, 1)
+
+
+def test_pipe_pick_missing_key_raises():
+    p = PipeValue({"a": 1}, {"a": "INT"})
+    with pytest.raises(PipeError, match="key 'b' not present"):
+        PipePick().execute(p, _manifest=json.dumps([["b", "INT"]]))
+
+
+def test_pipe_pick_empty_selection_is_passthrough_only():
+    p = PipeValue({"a": 1}, {"a": "INT"})
+    assert PipePick().execute(p, _manifest="[]") == (p,)
 
 
 # ---------------------------------------------------------------------------

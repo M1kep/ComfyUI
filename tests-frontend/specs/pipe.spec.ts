@@ -607,6 +607,107 @@ test.describe('Pipe nodes (frontend)', () => {
     expect(get.values).toEqual(keys)
   })
 
+  test.describe('Pipe Pick', () => {
+    test('grows a key combo per selection and reshapes outputs', async ({
+      comfyPage
+    }) => {
+      const { page } = comfyPage
+      const sA = await addNode(page, 'PrimitiveString')
+      const sB = await addNode(page, 'PrimitiveString')
+      const sC = await addNode(page, 'PrimitiveString')
+      const pipeId = await addNode(page, 'PipeCreate')
+      const pickId = await addNode(page, 'PipePick')
+
+      await connect(page, sA, 0, pipeId, await slotIndex(page, pipeId, '+'))
+      await connect(page, sB, 0, pipeId, await slotIndex(page, pipeId, '+'))
+      await connect(page, sC, 0, pipeId, await slotIndex(page, pipeId, '+'))
+      const keys = ((await nodeInfo(page, pipeId))!.manifest as [string, string][])
+        .map(([k]) => k)
+      await connect(page, pipeId, 0, pickId, await slotIndex(page, pickId, 'pipe'))
+
+      // After connect, key_1 combo is populated with upstream keys + blank.
+      const combo = (name: string) => page.evaluate(({ id, name }) => {
+        const n = window.app!.graph.getNodeById(id)!
+        const w = n.widgets!.find((w) => w.name === name)
+        return w ? { value: w.value, values: (w.options as any)?.values } : null
+      }, { id: pickId, name })
+
+      let c1 = await combo('key_1')
+      expect(c1!.values).toEqual(['', ...keys])
+      // No selections yet → only the passthrough output.
+      expect((await nodeInfo(page, pickId))!.outputs.map((o) => o.name))
+        .toEqual(['pipe'])
+
+      // Pick keys[2] then keys[0] — outputs grow in that order.
+      await setWidget(page, pickId, 'key_1', keys[2])
+      expect(await combo('key_2')).not.toBeNull() // grew a blank trailing combo
+      await setWidget(page, pickId, 'key_2', keys[0])
+      expect(await combo('key_3')).not.toBeNull()
+
+      const out = await nodeInfo(page, pickId)
+      expect(out!.outputs.map((o) => o.name)).toEqual(['pipe', keys[2], keys[0]])
+      for (const o of out!.outputs.slice(1)) expect(o.type).toBe('STRING')
+    })
+
+    test('clearing a key drops its output but preserves the surviving wire', async ({
+      comfyPage
+    }) => {
+      const { page } = comfyPage
+      const sA = await addNode(page, 'PrimitiveString')
+      const sB = await addNode(page, 'PrimitiveString')
+      const pipeId = await addNode(page, 'PipeCreate')
+      const pickId = await addNode(page, 'PipePick')
+      const sink = await addNode(page, 'PreviewAny')
+
+      await connect(page, sA, 0, pipeId, await slotIndex(page, pipeId, '+'))
+      await connect(page, sB, 0, pipeId, await slotIndex(page, pipeId, '+'))
+      const keys = ((await nodeInfo(page, pipeId))!.manifest as [string, string][])
+        .map(([k]) => k)
+      await connect(page, pipeId, 0, pickId, await slotIndex(page, pickId, 'pipe'))
+
+      await setWidget(page, pickId, 'key_1', keys[0])
+      await setWidget(page, pickId, 'key_2', keys[1])
+      await connect(page, pickId, await outSlot(page, pickId, keys[1]), sink, 0)
+
+      // Clear key_1 — output for keys[0] drops, keys[1]'s wire survives.
+      await setWidget(page, pickId, 'key_1', '')
+      const out = await nodeInfo(page, pickId)
+      expect(out!.outputs.map((o) => o.name)).toEqual(['pipe', keys[1]])
+      const sinkLink = await page.evaluate(
+        (id) => window.app!.graph.getNodeById(id)!.inputs[0].link,
+        sink
+      )
+      expect(sinkLink).not.toBeNull()
+    })
+
+    test('round-trip restores selected keys and outputs', async ({
+      comfyPage
+    }) => {
+      const { page } = comfyPage
+      const sA = await addNode(page, 'PrimitiveString')
+      const sB = await addNode(page, 'PrimitiveString')
+      const pipeId = await addNode(page, 'PipeCreate')
+      const pickId = await addNode(page, 'PipePick')
+
+      await connect(page, sA, 0, pipeId, await slotIndex(page, pipeId, '+'))
+      await connect(page, sB, 0, pipeId, await slotIndex(page, pipeId, '+'))
+      const keys = ((await nodeInfo(page, pipeId))!.manifest as [string, string][])
+        .map(([k]) => k)
+      await connect(page, pipeId, 0, pickId, await slotIndex(page, pickId, 'pipe'))
+      await setWidget(page, pickId, 'key_1', keys[1])
+
+      const before = (await nodeInfo(page, pickId))!.outputs.map((o) => o.name)
+      const ser = await page.evaluate(() =>
+        JSON.parse(JSON.stringify(window.app!.graph.serialize()))
+      )
+      await page.evaluate(async (s) => { await window.app!.loadGraphData(s) }, ser)
+
+      const picks = await comfyPage.nodeOps.getNodeRefsByType('PipePick')
+      const after = await nodeInfo(page, Number(picks[0].id))
+      expect(after!.outputs.map((o) => o.name)).toEqual(before)
+    })
+  })
+
   test.describe('Bundle into Pipe', () => {
     test('wires each selected node\'s first output into a fresh PipeCreate', async ({
       comfyPage

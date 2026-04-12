@@ -288,9 +288,45 @@ class PipeMerge:
         return (a.merged(b, collision),)
 
 
+class PipePick:
+    """Selectively unpack a subset of pipe keys. The JS extension adds one
+    growing key dropdown per output; the chosen keys are persisted in the
+    ``_manifest`` widget so the returned tuple lines up with the slots."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "pipe": ("PIPE",),
+            },
+            "optional": {
+                "_manifest": ("STRING", {"default": "[]", "multiline": False}),
+            },
+        }
+
+    RETURN_TYPES = _UnboundedTypeList(["PIPE", ANY])
+    RETURN_NAMES = ("pipe", "*")
+    FUNCTION = "execute"
+    CATEGORY = "utils/pipe"
+
+    def execute(self, pipe, _manifest="[]"):
+        pipe = _require_pipe(pipe, "Pipe Pick")
+        out = [pipe]
+        for key, expected in _parse_manifest(_manifest):
+            if key not in pipe.values:
+                raise PipeError(
+                    f"Pipe Pick: key '{key}' not present in pipe "
+                    f"(have: {sorted(pipe.keys())})"
+                )
+            _check_type("Pipe Pick", key, expected, pipe.types.get(key))
+            out.append(pipe.values[key])
+        return tuple(out)
+
+
 NODE_CLASS_MAPPINGS = {
     "PipeCreate": PipeCreate,
     "PipeOut": PipeOut,
+    "PipePick": PipePick,
     "PipeSet": PipeSet,
     "PipeRemove": PipeRemove,
     "PipeGet": PipeGet,
@@ -300,6 +336,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "PipeCreate": "Pipe",
     "PipeOut": "Pipe Out",
+    "PipePick": "Pipe Pick",
     "PipeSet": "Pipe Set",
     "PipeRemove": "Pipe Remove",
     "PipeGet": "Pipe Get",
