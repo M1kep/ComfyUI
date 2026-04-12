@@ -144,7 +144,8 @@ class PipeCreate:
 
 
 class PipeOut:
-    """Sink node. Unpacks a ``PIPE`` into one typed output per manifest key.
+    """Unpacks a ``PIPE`` into one typed output per manifest key, plus a
+    passthrough ``pipe`` output at slot 0 so the wire can keep flowing.
     Output slots are added by the JS extension; the persisted ``_manifest``
     widget records their order so the returned tuple lines up."""
 
@@ -159,8 +160,8 @@ class PipeOut:
             },
         }
 
-    RETURN_TYPES = _UnboundedTypeList([ANY])
-    RETURN_NAMES = ("*",)
+    RETURN_TYPES = _UnboundedTypeList(["PIPE", ANY])
+    RETURN_NAMES = ("pipe", "*")
     FUNCTION = "execute"
     CATEGORY = "utils/pipe"
 
@@ -169,7 +170,7 @@ class PipeOut:
         manifest = _parse_manifest(_manifest)
         if not manifest:
             manifest = pipe.manifest()
-        out = []
+        out = [pipe]
         for key, expected in manifest:
             if key not in pipe.values:
                 raise PipeError(
@@ -178,7 +179,7 @@ class PipeOut:
                 )
             _check_type("Pipe Out", key, expected, pipe.types.get(key))
             out.append(pipe.values[key])
-        return tuple(out) if out else (None,)
+        return tuple(out)
 
 
 class PipeSet:

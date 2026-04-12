@@ -147,11 +147,12 @@ function manifestOfOutput(node, slot, seen) {
         return out;
     }
     if (type === NODE_OUT || type === NODE_GET) {
-        // Each output of Pipe Out / Pipe Get is one upstream manifest entry's
-        // unpacked value. If that entry is itself a PIPE, return its nested
-        // manifest so a downstream Pipe Out can reshape correctly.
-        const outName = node.outputs?.[slot]?.name;
         const upstream = computeManifest(node, "pipe", seen);
+        // Pipe Out slot 0 is the PIPE passthrough — same manifest as the input.
+        if (type === NODE_OUT && slot === 0) return upstream;
+        // Other outputs are unpacked entries; if one is itself a PIPE, return
+        // its nested manifest so a downstream Pipe Out can reshape correctly.
+        const outName = node.outputs?.[slot]?.name;
         const entry = upstream.find(([k]) => k === outName);
         return entry ? (nestedOf(entry) ?? []) : [];
     }
@@ -247,7 +248,10 @@ function slugify(s) {
 }
 
 function uniqueKey(node, base) {
+    // "pipe" is the passthrough output's reserved name on Pipe Out — avoid
+    // auto-naming a key "pipe" so the two never collide.
     const taken = new Set((node.inputs ?? []).map((i) => i.name));
+    taken.add("pipe");
     if (!taken.has(base)) return base;
     let n = 2;
     while (taken.has(`${base}_${n}`)) n++;
@@ -283,14 +287,17 @@ function pipeOutReshape(node, manifest) {
     node.properties.pipe_manifest = manifest;
     setWidget(node, "_manifest", JSON.stringify(manifest));
 
+    // Slot 0 is the PIPE passthrough; manifest keys live at 1+.
+    const want = [["pipe", PIPE_TYPE], ...manifest.map(([k, t]) => [k, t])];
+
     // Manifest unchanged: outputs are already in the right positions, but
     // workflow load may have reset slot names/types to the nodeDef default —
     // patch them in place so existing links survive.
     if (sameManifest(prev, manifest)
-            && (node.outputs?.length ?? 0) === Math.max(1, manifest.length)) {
-        for (let i = 0; i < manifest.length; i++) {
-            node.outputs[i].name = manifest[i][0];
-            node.outputs[i].type = manifest[i][1];
+            && (node.outputs?.length ?? 0) === want.length) {
+        for (let i = 0; i < want.length; i++) {
+            node.outputs[i].name = want[i][0];
+            node.outputs[i].type = want[i][1];
         }
         return;
     }
@@ -311,16 +318,13 @@ function pipeOutReshape(node, manifest) {
     }
     while (node.outputs?.length) node.removeOutput(0);
 
-    for (const [key, type] of manifest) {
+    for (const [key, type] of want) {
         node.addOutput(key, type);
-    }
-    if (manifest.length === 0) {
-        node.addOutput("*", ANY_TYPE);
     }
 
     // Reattach links whose key+type still match.
-    for (let i = 0; i < manifest.length; i++) {
-        const [key, type] = manifest[i];
+    for (let i = 0; i < want.length; i++) {
+        const [key, type] = want[i];
         for (const l of oldLinks[key] ?? []) {
             const target = graph?.getNodeById?.(l.target_id);
             const tslot = target?.inputs?.[l.target_slot];
@@ -401,6 +405,36 @@ function refreshDownstream(node, seen) {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// "Bundle into Pipe" — canvas selection helper
+// ---------------------------------------------------------------------------
+
+function bundleSelectionIntoPipe(canvas) {
+    const graph = canvas.graph;
+    const selected = Object.values(canvas.selected_nodes ?? {})
+        .filter((n) => (n.outputs?.length ?? 0) > 0);
+    if (!selected.length) return;
+
+    // Place the new Pipe to the right of the selection bounding box.
+    let maxX = -Infinity, minY = Infinity;
+    for (const n of selected) {
+        maxX = Math.max(maxX, n.pos[0] + n.size[0]);
+        minY = Math.min(minY, n.pos[1]);
+    }
+    const pipe = window.LiteGraph.createNode(NODE_PIPE, undefined, {});
+    pipe.pos = [maxX + 60, minY];
+    graph.add(pipe);
+
+    for (const n of selected) {
+        const idx = (pipe.inputs ?? []).findIndex(
+            (i) => isPipeSlot(i) && i.link == null,
+        );
+        if (idx < 0) break;
+        n.connect(0, pipe, idx);
+    }
+    canvas.setDirty(true, true);
 }
 
 // ---------------------------------------------------------------------------
@@ -511,6 +545,18 @@ app.registerExtension({
                 }
             };
         }
+    },
+
+    getCanvasMenuItems(canvas) {
+        const selected = Object.values(canvas?.selected_nodes ?? {});
+        if (!selected.length) return [];
+        return [
+            null,
+            {
+                content: `Bundle ${selected.length} output${selected.length > 1 ? "s" : ""} into Pipe`,
+                callback: () => bundleSelectionIntoPipe(canvas),
+            },
+        ];
     },
 
     async afterConfigureGraph() {

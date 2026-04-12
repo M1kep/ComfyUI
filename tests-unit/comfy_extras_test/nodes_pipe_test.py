@@ -81,10 +81,11 @@ def test_pipe_create_validate_rejects_duplicate_keys():
 # PipeOut
 # ---------------------------------------------------------------------------
 
-def test_pipe_out_unpacks_in_manifest_order():
+def test_pipe_out_passthrough_then_unpacks_in_manifest_order():
     p = PipeValue({"a": 1, "b": 2}, {"a": "INT", "b": "INT"})
     out = PipeOut().execute(p, _manifest=json.dumps([["b", "INT"], ["a", "INT"]]))
-    assert out == (2, 1)
+    assert out[0] is p
+    assert out[1:] == (2, 1)
 
 
 def test_pipe_out_missing_key_raises():
@@ -102,7 +103,8 @@ def test_pipe_out_type_mismatch_raises():
 def test_pipe_out_empty_manifest_falls_back_to_pipe_order():
     p = PipeValue({"a": 1, "b": 2}, {})
     out = PipeOut().execute(p, _manifest="[]")
-    assert out == (1, 2)
+    assert out[0] is p
+    assert out[1:] == (1, 2)
 
 
 # ---------------------------------------------------------------------------
@@ -180,4 +182,5 @@ def test_chain_create_set_remove_out():
     out = PipeOut().execute(
         p, _manifest=json.dumps([["model", "MODEL"], ["vae", "VAE"]])
     )
-    assert out == ("M", "V")
+    assert out[0] is p
+    assert out[1:] == ("M", "V")

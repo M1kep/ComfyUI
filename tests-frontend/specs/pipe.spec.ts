@@ -60,6 +60,11 @@ async function nodeInfo(page: Page, id: number) {
   return page.evaluate((id) => {
     const n = window.app!.graph.getNodeById(id)
     if (!n) return null
+    const outputs = (n.outputs ?? []).map((o) => ({
+      name: o.name,
+      type: o.type,
+      linkCount: o.links?.length ?? 0
+    }))
     return {
       id: n.id,
       // Only socket inputs (widget-backed slots are an implementation detail
@@ -71,11 +76,12 @@ async function nodeInfo(page: Page, id: number) {
           type: i.type,
           linked: i.link != null
         })),
-      outputs: (n.outputs ?? []).map((o) => ({
-        name: o.name,
-        type: o.type,
-        linkCount: o.links?.length ?? 0
-      })),
+      outputs,
+      // PipeOut output[0] is the PIPE passthrough; key outputs are 1+.
+      keyOutputs:
+        n.type === 'PipeOut' && outputs[0]?.type === 'PIPE'
+          ? outputs.slice(1)
+          : outputs,
       manifest: (n.properties ?? {}).pipe_manifest ?? null
     }
   }, id)
@@ -86,6 +92,16 @@ async function slotIndex(page: Page, id: number, name: string): Promise<number> 
     ({ id, name }) => {
       const n = window.app!.graph.getNodeById(id)!
       return (n.inputs ?? []).findIndex((i) => i.name === name)
+    },
+    { id, name }
+  )
+}
+
+async function outSlot(page: Page, id: number, name: string): Promise<number> {
+  return page.evaluate(
+    ({ id, name }) => {
+      const n = window.app!.graph.getNodeById(id)!
+      return (n.outputs ?? []).findIndex((o) => o.name === name)
     },
     { id, name }
   )
@@ -147,14 +163,40 @@ test.describe('Pipe nodes (frontend)', () => {
     await connect(page, pipeId, 0, outId, await slotIndex(page, outId, 'pipe'))
 
     const out = await nodeInfo(page, outId)
-    expect(out!.outputs.length).toBeGreaterThanOrEqual(2)
+    expect(out!.keyOutputs.length).toBeGreaterThanOrEqual(2)
     // Output names match the pipe manifest keys, output types STRING.
     const pipeInfo = await nodeInfo(page, pipeId)
     const manifestKeys = (pipeInfo!.manifest as [string, string][]).map(
       ([k]) => k
     )
-    expect(out!.outputs.map((o) => o.name)).toEqual(manifestKeys)
-    for (const o of out!.outputs) expect(o.type).toBe('STRING')
+    expect(out!.keyOutputs.map((o) => o.name)).toEqual(manifestKeys)
+    for (const o of out!.keyOutputs) expect(o.type).toBe('STRING')
+    // Output 0 is the PIPE passthrough.
+    expect(out!.outputs[0]).toMatchObject({ name: 'pipe', type: 'PIPE' })
+  })
+
+  test('PipeOut passthrough carries the same manifest into a downstream PipeOut', async ({
+    comfyPage
+  }) => {
+    const { page } = comfyPage
+
+    const sA = await addNode(page, 'PrimitiveString')
+    const sB = await addNode(page, 'PrimitiveString')
+    const pipeId = await addNode(page, 'PipeCreate')
+    const out1 = await addNode(page, 'PipeOut')
+    const out2 = await addNode(page, 'PipeOut')
+
+    await connect(page, sA, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    await connect(page, sB, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    await connect(page, pipeId, 0, out1, await slotIndex(page, out1, 'pipe'))
+    // Chain the passthrough into a second PipeOut.
+    await connect(page, out1, await outSlot(page, out1, 'pipe'), out2, await slotIndex(page, out2, 'pipe'))
+
+    const a = await nodeInfo(page, out1)
+    const b = await nodeInfo(page, out2)
+    expect(b!.keyOutputs.map((o) => o.name)).toEqual(
+      a!.keyOutputs.map((o) => o.name)
+    )
   })
 
   test('PipeSet adds and PipeRemove removes keys downstream', async ({
@@ -182,8 +224,8 @@ test.describe('Pipe nodes (frontend)', () => {
     await connect(page, rmId, 0, outId, await slotIndex(page, outId, 'pipe'))
 
     const out = await nodeInfo(page, outId)
-    expect(out!.outputs.map((o) => o.name)).toEqual(['extra'])
-    expect(out!.outputs[0].type).toBe('STRING')
+    expect(out!.keyOutputs.map((o) => o.name)).toEqual(['extra'])
+    expect(out!.keyOutputs[0].type).toBe('STRING')
   })
 
   test('queuing a PipeCreate→PipeGet→PreviewAny graph unpacks the value', async ({
@@ -294,27 +336,28 @@ test.describe('Pipe nodes (frontend)', () => {
     const nested = outerManifest[1][2] as [string, string][]
     expect(nested.map((e) => e[1])).toEqual(['STRING', 'STRING'])
 
-    // Outer Pipe Out: 2 outputs of types [STRING, PIPE]
+    // Outer Pipe Out: passthrough + 2 key outputs of types [STRING, PIPE]
     const outerOut = await addNode(page, 'PipeOut')
     await connect(page, outerPipe, 0, outerOut, await slotIndex(page, outerOut, 'pipe'))
     const outerOutInfo = await nodeInfo(page, outerOut)
-    expect(outerOutInfo!.outputs.map((o) => o.type)).toEqual(['STRING', 'PIPE'])
+    expect(outerOutInfo!.keyOutputs.map((o) => o.type)).toEqual(['STRING', 'PIPE'])
 
-    // Inner Pipe Out: connect outerOut's PIPE-typed output → expects 2 STRING outputs
-    const pipeSlotOnOuterOut = outerOutInfo!.outputs.findIndex((o) => o.type === 'PIPE')
+    // Inner Pipe Out: connect outerOut's PIPE-typed key output → 2 STRING key outputs
+    const innerKey = outerOutInfo!.keyOutputs.find((o) => o.type === 'PIPE')!.name
     const innerOut = await addNode(page, 'PipeOut')
-    await connect(page, outerOut, pipeSlotOnOuterOut, innerOut, await slotIndex(page, innerOut, 'pipe'))
+    await connect(page, outerOut, await outSlot(page, outerOut, innerKey), innerOut, await slotIndex(page, innerOut, 'pipe'))
     const innerOutInfo = await nodeInfo(page, innerOut)
-    expect(innerOutInfo!.outputs).toHaveLength(2)
-    for (const o of innerOutInfo!.outputs) expect(o.type).toBe('STRING')
+    expect(innerOutInfo!.keyOutputs).toHaveLength(2)
+    for (const o of innerOutInfo!.keyOutputs) expect(o.type).toBe('STRING')
     // Names should match the inner manifest keys (preserved through the nest).
-    expect(innerOutInfo!.outputs.map((o) => o.name)).toEqual(nested.map((e) => e[0]))
+    expect(innerOutInfo!.keyOutputs.map((o) => o.name)).toEqual(nested.map((e) => e[0]))
 
     // End-to-end: queue and verify the unpacked nested values reach previews.
     const previewA = await addNode(page, 'PreviewAny')
     const previewB = await addNode(page, 'PreviewAny')
-    await connect(page, innerOut, 0, previewA, 0)
-    await connect(page, innerOut, 1, previewB, 0)
+    const [kA, kB] = nested.map((e) => e[0])
+    await connect(page, innerOut, await outSlot(page, innerOut, kA), previewA, 0)
+    await connect(page, innerOut, await outSlot(page, innerOut, kB), previewB, 0)
 
     await comfyPage.command.executeCommand('Comfy.QueuePrompt')
 
@@ -342,7 +385,7 @@ test.describe('Pipe nodes (frontend)', () => {
     await connect(page, sB, 0, pipeId, await slotIndex(page, pipeId, '+'))
     await connect(page, pipeId, 0, outId, await slotIndex(page, outId, 'pipe'))
 
-    expect((await nodeInfo(page, outId))!.outputs).toHaveLength(2)
+    expect((await nodeInfo(page, outId))!.keyOutputs).toHaveLength(2)
 
     // Disconnect sA from the pipe.
     await page.evaluate(({ pipeId }) => {
@@ -356,8 +399,8 @@ test.describe('Pipe nodes (frontend)', () => {
     expect(after!.inputs.filter((i) => i.linked)).toHaveLength(1)
     expect(after!.inputs).toHaveLength(2)
     expect((after!.manifest as unknown[]).length).toBe(1)
-    // Downstream PipeOut reshaped to one output.
-    expect((await nodeInfo(page, outId))!.outputs).toHaveLength(1)
+    // Downstream PipeOut reshaped to one key output.
+    expect((await nodeInfo(page, outId))!.keyOutputs).toHaveLength(1)
   })
 
   test('PipeOut keeps surviving downstream wires when an upstream key is removed', async ({
@@ -375,12 +418,12 @@ test.describe('Pipe nodes (frontend)', () => {
     await connect(page, sA, 0, pipeId, await slotIndex(page, pipeId, '+'))
     await connect(page, sB, 0, pipeId, await slotIndex(page, pipeId, '+'))
     await connect(page, pipeId, 0, outId, await slotIndex(page, outId, 'pipe'))
-    await connect(page, outId, 0, sinkA, 0)
-    await connect(page, outId, 1, sinkB, 0)
+    const keys = (await nodeInfo(page, outId))!.keyOutputs.map((o) => o.name)
+    await connect(page, outId, await outSlot(page, outId, keys[0]), sinkA, 0)
+    await connect(page, outId, await outSlot(page, outId, keys[1]), sinkB, 0)
 
     const before = await nodeInfo(page, outId)
-    expect(before!.outputs.map((o) => o.linkCount)).toEqual([1, 1])
-    const survivorKey = before!.outputs[1].name
+    expect(before!.keyOutputs.map((o) => o.linkCount)).toEqual([1, 1])
 
     // Disconnect the FIRST upstream key on PipeCreate.
     await page.evaluate(({ pipeId }) => {
@@ -391,9 +434,9 @@ test.describe('Pipe nodes (frontend)', () => {
 
     const after = await nodeInfo(page, outId)
     // Only the surviving key remains, and its downstream wire is preserved.
-    expect(after!.outputs).toHaveLength(1)
-    expect(after!.outputs[0].name).toBe(survivorKey)
-    expect(after!.outputs[0].linkCount).toBe(1)
+    expect(after!.keyOutputs).toHaveLength(1)
+    expect(after!.keyOutputs[0].name).toBe(keys[1])
+    expect(after!.keyOutputs[0].linkCount).toBe(1)
     // sinkA's input link is dropped (its key vanished).
     const sinkAInfo = await page.evaluate((id) => {
       const n = window.app!.graph.getNodeById(id)!
@@ -415,8 +458,8 @@ test.describe('Pipe nodes (frontend)', () => {
     await connect(page, reroute, 0, outId, await slotIndex(page, outId, 'pipe'))
 
     const out = await nodeInfo(page, outId)
-    expect(out!.outputs).toHaveLength(1)
-    expect(out!.outputs[0].type).toBe('STRING')
+    expect(out!.keyOutputs).toHaveLength(1)
+    expect(out!.keyOutputs[0].type).toBe('STRING')
   })
 
   test('changing the inner pipe propagates to the outer nested manifest', async ({
@@ -431,24 +474,23 @@ test.describe('Pipe nodes (frontend)', () => {
     const outerOut = await addNode(page, 'PipeOut')
     const innerOut = await addNode(page, 'PipeOut')
 
-    // inner:{a} -> outer -> outerOut[PIPE] -> innerOut
+    // inner:{a} -> outer -> outerOut[PIPE key] -> innerOut
     await connect(page, sA, 0, inner, await slotIndex(page, inner, '+'))
     await connect(page, inner, 0, outer, await slotIndex(page, outer, '+'))
     await connect(page, outer, 0, outerOut, await slotIndex(page, outerOut, 'pipe'))
-    const pipeSlot = (await nodeInfo(page, outerOut))!.outputs.findIndex(
-      (o) => o.type === 'PIPE'
-    )
-    await connect(page, outerOut, pipeSlot, innerOut, await slotIndex(page, innerOut, 'pipe'))
+    const innerKey = (await nodeInfo(page, outerOut))!.keyOutputs
+      .find((o) => o.type === 'PIPE')!.name
+    await connect(page, outerOut, await outSlot(page, outerOut, innerKey), innerOut, await slotIndex(page, innerOut, 'pipe'))
 
-    expect((await nodeInfo(page, innerOut))!.outputs).toHaveLength(1)
+    expect((await nodeInfo(page, innerOut))!.keyOutputs).toHaveLength(1)
 
     // Now extend INNER with a second key — the chain should propagate so
-    // innerOut grows a second output.
+    // innerOut grows a second key output.
     await connect(page, sB, 0, inner, await slotIndex(page, inner, '+'))
 
     const refreshed = await nodeInfo(page, innerOut)
-    expect(refreshed!.outputs).toHaveLength(2)
-    for (const o of refreshed!.outputs) expect(o.type).toBe('STRING')
+    expect(refreshed!.keyOutputs).toHaveLength(2)
+    for (const o of refreshed!.keyOutputs) expect(o.type).toBe('STRING')
   })
 
   test('PipeMerge unions manifests with the chosen collision policy', async ({
@@ -488,13 +530,13 @@ test.describe('Pipe nodes (frontend)', () => {
     // order.
     const expected = [...new Set([...lKeys, ...rKeys])]
     let outInfo = await nodeInfo(page, out)
-    expect(outInfo!.outputs.map((o) => o.name)).toEqual(expected)
+    expect(outInfo!.keyOutputs.map((o) => o.name)).toEqual(expected)
 
     // Flip the collision policy and confirm the downstream re-walk fires
     // (surface keys don't change here since both colliding entries are STRING).
     await setWidget(page, merge, 'collision', 'left_wins')
     outInfo = await nodeInfo(page, out)
-    expect(outInfo!.outputs.map((o) => o.name)).toEqual(expected)
+    expect(outInfo!.keyOutputs.map((o) => o.name)).toEqual(expected)
   })
 
   test('key widget on PipeRemove/PipeGet becomes a dropdown of upstream keys', async ({
@@ -530,5 +572,55 @@ test.describe('Pipe nodes (frontend)', () => {
     const get = await widgetInfo(getId)
     expect(get.type).toBe('combo')
     expect(get.values).toEqual(keys)
+  })
+
+  test('Bundle into Pipe wires each selected node\'s first output into a fresh PipeCreate', async ({
+    comfyPage
+  }) => {
+    const { page } = comfyPage
+
+    const sA = await addNode(page, 'PrimitiveString')
+    const iA = await addNode(page, 'PrimitiveInt')
+
+    const pipeId = await page.evaluate(({ sA, iA }) => {
+      const canvas = window.app!.canvas
+      // Programmatically select; UI selection helpers vary by frontend version.
+      canvas.selected_nodes = {
+        [sA]: window.app!.graph.getNodeById(sA),
+        [iA]: window.app!.graph.getNodeById(iA),
+      }
+      // Find and invoke the menu item the extension contributed.
+      const items: any[] = []
+      // @ts-expect-error — frontend extension hook
+      for (const ext of window.app!.extensions ?? []) {
+        if (typeof ext.getCanvasMenuItems === 'function') {
+          items.push(...(ext.getCanvasMenuItems(canvas) ?? []))
+        }
+      }
+      const item = items.find((i) => i && /Bundle .* into Pipe/.test(i.content))
+      if (!item) throw new Error('Bundle into Pipe menu item not found')
+      item.callback()
+      return Number(
+        window.app!.graph.nodes.find((n) => n.type === 'PipeCreate')!.id
+      )
+    }, { sA, iA })
+
+    const info = await nodeInfo(page, pipeId)
+    expect((info!.manifest as unknown[]).length).toBe(2)
+    const types = (info!.manifest as [string, string][]).map(([, t]) => t).sort()
+    expect(types).toEqual(['INT', 'STRING'])
+    // Positioned to the right of the selection.
+    const pipePos = await page.evaluate(
+      (id) => window.app!.graph.getNodeById(id)!.pos[0],
+      pipeId
+    )
+    const srcPos = await page.evaluate(
+      (id) => {
+        const n = window.app!.graph.getNodeById(id)!
+        return n.pos[0] + n.size[0]
+      },
+      sA
+    )
+    expect(pipePos).toBeGreaterThan(srcPos)
   })
 })
