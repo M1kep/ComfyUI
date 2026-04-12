@@ -19,8 +19,9 @@ class _UnboundedTypeList(list):
 
 
 def _parse_manifest(raw):
-    """Parse a manifest string (JSON list of ``[key, type]``) into an ordered
-    list of pairs. Tolerates legacy dict form."""
+    """Parse a manifest string (JSON list of ``[key, type, ...]``) into an
+    ordered list of (key, type) pairs. Tolerates legacy dict form and ignores
+    any extra elements (e.g. nested manifests carried for the frontend)."""
     if not raw:
         return []
     try:
@@ -32,7 +33,7 @@ def _parse_manifest(raw):
     if isinstance(data, list):
         out = []
         for entry in data:
-            if isinstance(entry, (list, tuple)) and len(entry) == 2:
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
                 out.append((str(entry[0]), str(entry[1])))
         return out
     return []

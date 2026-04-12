@@ -88,6 +88,18 @@ function computeManifest(node, inputName, seen) {
     return manifestOfOutput(origin.node, origin.slot, seen);
 }
 
+// Manifest entry shape: [key, type] or [key, "PIPE", nestedManifest].
+// The optional 3rd element lets a downstream Pipe Out unpack a nested pipe
+// without re-walking the whole upstream chain (which would yield the OUTER
+// manifest, not the inner one).
+function entryFor(name, type, nested) {
+    return type === PIPE_TYPE && nested ? [name, type, nested] : [name, type];
+}
+
+function nestedOf(entry) {
+    return entry[1] === PIPE_TYPE ? entry[2] ?? [] : null;
+}
+
 function manifestOfOutput(node, slot, seen) {
     if (!node || seen.has(node.id)) return [];
     seen.add(node.id);
@@ -95,16 +107,21 @@ function manifestOfOutput(node, slot, seen) {
     const type = node.type ?? node.comfyClass;
 
     if (type === NODE_PIPE) {
-        return (node.properties?.pipe_manifest ?? []).map(([k, t]) => [k, t]);
+        // Clone so callers can mutate (e.g. PipeSet appends entries).
+        return (node.properties?.pipe_manifest ?? []).map((e) => [...e]);
     }
     if (type === NODE_SET) {
         const m = computeManifest(node, "pipe", seen);
         const key = getWidget(node, "key");
         const vtype = getWidget(node, "_value_type") || ANY_TYPE;
         if (key) {
+            const nested = vtype === PIPE_TYPE
+                ? computeManifest(node, "value", new Set(seen))
+                : null;
+            const entry = entryFor(key, vtype, nested);
             const i = m.findIndex(([k]) => k === key);
-            if (i >= 0) m[i] = [key, vtype];
-            else m.push([key, vtype]);
+            if (i >= 0) m[i] = entry;
+            else m.push(entry);
         }
         return m;
     }
@@ -117,17 +134,26 @@ function manifestOfOutput(node, slot, seen) {
         const a = computeManifest(node, "a", new Set(seen));
         const b = computeManifest(node, "b", new Set(seen));
         const collision = getWidget(node, "collision") || "right_wins";
-        const out = a.map(([k, t]) => [k, t]);
-        for (const [k, t] of b) {
-            const i = out.findIndex(([ok]) => ok === k);
+        const out = a.map((e) => [...e]);
+        for (const e of b) {
+            const i = out.findIndex(([ok]) => ok === e[0]);
             if (i >= 0) {
                 if (collision === "left_wins") continue;
-                out[i] = [k, t];
+                out[i] = [...e];
             } else {
-                out.push([k, t]);
+                out.push([...e]);
             }
         }
         return out;
+    }
+    if (type === NODE_OUT || type === NODE_GET) {
+        // Each output of Pipe Out / Pipe Get is one upstream manifest entry's
+        // unpacked value. If that entry is itself a PIPE, return its nested
+        // manifest so a downstream Pipe Out can reshape correctly.
+        const outName = node.outputs?.[slot]?.name;
+        const upstream = computeManifest(node, "pipe", seen);
+        const entry = upstream.find(([k]) => k === outName);
+        return entry ? (nestedOf(entry) ?? []) : [];
     }
 
     // Pass-through: reroutes, subgraph IO proxies, or any unknown node that
@@ -149,6 +175,9 @@ function sameManifest(a, b) {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) {
         if (a[i][0] !== b[i][0] || a[i][1] !== b[i][1]) return false;
+        // Only the surface (key, type) drives slot rendering; nested manifests
+        // are tracked separately on PipeCreate.properties so a no-op rebuild
+        // here doesn't mask deep changes.
     }
     return true;
 }
@@ -179,9 +208,15 @@ function pipeCreateSync(node) {
     }
     const manifest = [];
     for (const inp of node.inputs ?? []) {
-        if (isPipeSlot(inp) && inp.link != null) {
-            manifest.push([inp.name, inp.type === ANY_TYPE ? ANY_TYPE : inp.type]);
+        if (!isPipeSlot(inp) || inp.link == null) continue;
+        const t = inp.type === ANY_TYPE ? ANY_TYPE : inp.type;
+        let nested = null;
+        if (t === PIPE_TYPE) {
+            const link = getGraph(node)?.links?.[inp.link];
+            const src = link && getGraph(node)?.getNodeById?.(link.origin_id);
+            if (src) nested = manifestOfOutput(src, link.origin_slot, new Set());
         }
+        manifest.push(entryFor(inp.name, t, nested));
     }
     const last = trailing >= 0 ? node.inputs[trailing] : null;
     if (!last || last.link != null) {

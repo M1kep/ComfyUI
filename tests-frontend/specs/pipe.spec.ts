@@ -260,4 +260,71 @@ test.describe('Pipe nodes (frontend)', () => {
       before.out!.outputs.map((o) => o.name)
     )
   })
+
+  test('nested pipes: outer Pipe Out exposes a PIPE output that an inner Pipe Out unpacks correctly', async ({
+    comfyPage
+  }) => {
+    const { page } = comfyPage
+
+    // Data flow under test:
+    //   strA, strB --> innerPipe (PipeCreate)
+    //   strM --> outerPipe (PipeCreate slot 0)
+    //   innerPipe --> outerPipe (PipeCreate slot 1, type=PIPE)
+    //   outerPipe --> outerOut (PipeOut)            -> outputs [STRING, PIPE]
+    //   outerOut.<inner> --> innerOut (PipeOut)     -> outputs [STRING, STRING]
+    //   innerOut.0 --> previewA, innerOut.1 --> previewB
+    const strA = await addNode(page, 'PrimitiveString')
+    await setWidget(page, strA, 'value', 'A')
+    const strB = await addNode(page, 'PrimitiveString')
+    await setWidget(page, strB, 'value', 'B')
+    const strM = await addNode(page, 'PrimitiveString')
+    await setWidget(page, strM, 'value', 'M')
+
+    const innerPipe = await addNode(page, 'PipeCreate')
+    await connect(page, strA, 0, innerPipe, await slotIndex(page, innerPipe, '+'))
+    await connect(page, strB, 0, innerPipe, await slotIndex(page, innerPipe, '+'))
+
+    const outerPipe = await addNode(page, 'PipeCreate')
+    await connect(page, strM, 0, outerPipe, await slotIndex(page, outerPipe, '+'))
+    await connect(page, innerPipe, 0, outerPipe, await slotIndex(page, outerPipe, '+'))
+
+    // Outer manifest: [(modelKey, STRING), (innerKey, PIPE, [(aKey, STRING), (bKey, STRING)])]
+    const outerManifest = (await nodeInfo(page, outerPipe))!.manifest as unknown[][]
+    expect(outerManifest.map((e) => e[1])).toEqual(['STRING', 'PIPE'])
+    const nested = outerManifest[1][2] as [string, string][]
+    expect(nested.map((e) => e[1])).toEqual(['STRING', 'STRING'])
+
+    // Outer Pipe Out: 2 outputs of types [STRING, PIPE]
+    const outerOut = await addNode(page, 'PipeOut')
+    await connect(page, outerPipe, 0, outerOut, await slotIndex(page, outerOut, 'pipe'))
+    const outerOutInfo = await nodeInfo(page, outerOut)
+    expect(outerOutInfo!.outputs.map((o) => o.type)).toEqual(['STRING', 'PIPE'])
+
+    // Inner Pipe Out: connect outerOut's PIPE-typed output → expects 2 STRING outputs
+    const pipeSlotOnOuterOut = outerOutInfo!.outputs.findIndex((o) => o.type === 'PIPE')
+    const innerOut = await addNode(page, 'PipeOut')
+    await connect(page, outerOut, pipeSlotOnOuterOut, innerOut, await slotIndex(page, innerOut, 'pipe'))
+    const innerOutInfo = await nodeInfo(page, innerOut)
+    expect(innerOutInfo!.outputs).toHaveLength(2)
+    for (const o of innerOutInfo!.outputs) expect(o.type).toBe('STRING')
+    // Names should match the inner manifest keys (preserved through the nest).
+    expect(innerOutInfo!.outputs.map((o) => o.name)).toEqual(nested.map((e) => e[0]))
+
+    // End-to-end: queue and verify the unpacked nested values reach previews.
+    const previewA = await addNode(page, 'PreviewAny')
+    const previewB = await addNode(page, 'PreviewAny')
+    await connect(page, innerOut, 0, previewA, 0)
+    await connect(page, innerOut, 1, previewB, 0)
+
+    await comfyPage.command.executeCommand('Comfy.QueuePrompt')
+
+    const pa = await comfyPage.nodeOps.getNodeRefById(previewA)
+    const pb = await comfyPage.nodeOps.getNodeRefById(previewB)
+    await expect
+      .poll(async () => (await pa.getWidget(0)).getValue(), { timeout: 15_000 })
+      .toBe('A')
+    await expect
+      .poll(async () => (await pb.getWidget(0)).getValue(), { timeout: 15_000 })
+      .toBe('B')
+  })
 })
