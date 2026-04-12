@@ -1,5 +1,90 @@
 // Shared helpers for the Pipe browser specs.
-import type { Page } from '@playwright/test'
+//
+// The `pipeTest` fixture below is the speed/stability fix for these specs.
+// The frontend's stock `comfyPage` fixture loads the entire ComfyUI app into
+// a fresh browser context for EVERY test (~2.5s overhead each). After ~10
+// such loads in one Chromium process the renderer hangs and `page.goto`
+// times out — that's the flake we kept seeing on the 11th-ish test.
+//
+// `pipeTest` instead boots ONE page per worker (worker-scoped fixture),
+// reuses it for every test, and just `graph.clear()`s between tests. That
+// drops per-test overhead to <0.5s and removes the renderer-hang entirely.
+import type { Page, APIRequestContext } from '@playwright/test'
+import { test as base } from '@playwright/test'
+
+const URL = process.env.PLAYWRIGHT_TEST_URL ?? 'http://localhost:8188'
+
+export const pipeTest = base.extend<
+  { pipePage: Page },
+  { _pipePageWorker: Page }
+>({
+  _pipePageWorker: [
+    async ({ browser }, use, workerInfo) => {
+      const context = await browser.newContext()
+      const page = await context.newPage()
+      // Minimal user/settings bootstrap (same calls ComfyPage.setupUser /
+      // setupSettings make, without the per-test storage clear + reload).
+      const userId = await ensureUser(
+        page.request,
+        `pipe-spec-${workerInfo.parallelIndex}`
+      )
+      await page.request.post(`${URL}/api/devtools/set_settings`, {
+        data: {
+          'Comfy.UseNewMenu': 'Top',
+          'Comfy.Graph.CanvasInfo': false,
+          'Comfy.Graph.CanvasMenu': false,
+          'Comfy.Canvas.SelectionToolbox': false,
+          'Comfy.EnableTooltips': false,
+          'Comfy.userId': userId,
+          'Comfy.TutorialCompleted': true,
+          'Comfy.VersionCompatibility.DisableWarnings': true,
+          'Comfy.RightSidePanel.ShowErrorsTab': false
+        }
+      })
+
+      await page.addInitScript((id) => {
+        localStorage.setItem('Comfy.userId', id)
+      }, userId)
+      await page.goto(URL)
+      await page.waitForFunction(
+        () => (window as any).app && (window as any).app.extensionManager
+      )
+      await use(page)
+      await context.close()
+    },
+    { scope: 'worker' }
+  ],
+
+  pipePage: async ({ _pipePageWorker }, use) => {
+    await _pipePageWorker.evaluate(() => window.app!.graph.clear())
+    await use(_pipePageWorker)
+  }
+})
+
+async function ensureUser(request: APIRequestContext, name: string) {
+  const res = await request.get(`${URL}/api/users`)
+  const users = (await res.json())?.users ?? {}
+  const found = Object.entries(users).find(([, n]) => n === name)
+  if (found) return found[0]
+  const created = await request.post(`${URL}/api/users`, { data: { username: name } })
+  return await created.json()
+}
+
+/** Bridge for the few specs that still need ComfyPage helpers (queue + poll). */
+export async function executeCommand(page: Page, command: string) {
+  await page.evaluate(
+    (cmd) => (window as any).app.extensionManager.command.execute(cmd),
+    command
+  )
+}
+
+export async function widgetValue(page: Page, nodeId: number, widgetIdx: number) {
+  return page.evaluate(
+    ({ nodeId, widgetIdx }) =>
+      window.app!.graph.getNodeById(nodeId)!.widgets?.[widgetIdx]?.value,
+    { nodeId, widgetIdx }
+  )
+}
 
 export async function addNode(page: Page, type: string): Promise<number> {
   return page.evaluate((type) => {

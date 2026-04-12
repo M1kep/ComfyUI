@@ -7,26 +7,23 @@
 // assert against.
 import { expect } from '@playwright/test'
 
-import { comfyPageFixture as test } from '@e2e/fixtures/ComfyPage'
-
 import {
   addNode,
   connect,
+  executeCommand,
   nodeInfo,
   outSlot,
+  pipeTest as test,
   setWidget,
-  slotIndex
+  slotIndex,
+  widgetValue
 } from './_pipe_helpers'
 
 test.describe('Pipe nodes (frontend)', () => {
-  test.beforeEach(async ({ comfyPage }) => {
-    await comfyPage.page.evaluate(() => window.app!.graph.clear())
-  })
 
   test('PipeCreate grows a trailing slot and names each key after the upstream', async ({
-    comfyPage
+    pipePage: page
   }) => {
-    const { page } = comfyPage
 
     const pipeId = await addNode(page, 'PipeCreate')
     const sA = await addNode(page, 'PrimitiveString')
@@ -60,9 +57,8 @@ test.describe('Pipe nodes (frontend)', () => {
   })
 
   test('PipeOut reshapes outputs from the upstream manifest', async ({
-    comfyPage
+    pipePage: page
   }) => {
-    const { page } = comfyPage
 
     const pipeId = await addNode(page, 'PipeCreate')
     const outId = await addNode(page, 'PipeOut')
@@ -87,9 +83,8 @@ test.describe('Pipe nodes (frontend)', () => {
   })
 
   test('PipeOut passthrough carries the same manifest into a downstream PipeOut', async ({
-    comfyPage
+    pipePage: page
   }) => {
-    const { page } = comfyPage
 
     const sA = await addNode(page, 'PrimitiveString')
     const sB = await addNode(page, 'PrimitiveString')
@@ -111,9 +106,8 @@ test.describe('Pipe nodes (frontend)', () => {
   })
 
   test('PipeSet adds and PipeRemove removes keys downstream', async ({
-    comfyPage
+    pipePage: page
   }) => {
-    const { page } = comfyPage
 
     const pipeId = await addNode(page, 'PipeCreate')
     const setId = await addNode(page, 'PipeSet')
@@ -140,9 +134,8 @@ test.describe('Pipe nodes (frontend)', () => {
   })
 
   test('queuing a PipeCreate→PipeGet→PreviewAny graph unpacks the value', async ({
-    comfyPage
+    pipePage: page
   }) => {
-    const { page } = comfyPage
 
     const sA = await addNode(page, 'PrimitiveString')
     await setWidget(page, sA, 'value', 'hello-from-pipe')
@@ -160,20 +153,15 @@ test.describe('Pipe nodes (frontend)', () => {
     const previewId = await addNode(page, 'PreviewAny')
     await connect(page, getId, 0, previewId, 0)
 
-    await comfyPage.command.executeCommand('Comfy.QueuePrompt')
-
-    const preview = await comfyPage.nodeOps.getNodeRefById(previewId)
+    await executeCommand(page, 'Comfy.QueuePrompt')
     await expect
-      .poll(async () => (await preview.getWidget(0)).getValue(), {
-        timeout: 15_000
-      })
+      .poll(() => widgetValue(page, previewId, 0), { timeout: 15_000 })
       .toBe('hello-from-pipe')
   })
 
   test('workflow round-trip preserves slots and manifest', async ({
-    comfyPage
+    pipePage: page
   }) => {
-    const { page } = comfyPage
 
     const pipeId = await addNode(page, 'PipeCreate')
     const outId = await addNode(page, 'PipeOut')
@@ -197,14 +185,13 @@ test.describe('Pipe nodes (frontend)', () => {
       await window.app!.loadGraphData(s)
     }, serialized)
 
-    const pipeNodes = await comfyPage.nodeOps.getNodeRefsByType('PipeCreate')
-    const outNodes = await comfyPage.nodeOps.getNodeRefsByType('PipeOut')
-    expect(pipeNodes).toHaveLength(1)
-    expect(outNodes).toHaveLength(1)
-
+    const ids = await page.evaluate(() => ({
+      pipe: window.app!.graph.nodes.find((n) => n.type === 'PipeCreate')!.id,
+      out: window.app!.graph.nodes.find((n) => n.type === 'PipeOut')!.id
+    }))
     const after = {
-      pipe: await nodeInfo(page, Number(pipeNodes[0].id)),
-      out: await nodeInfo(page, Number(outNodes[0].id))
+      pipe: await nodeInfo(page, Number(ids.pipe)),
+      out: await nodeInfo(page, Number(ids.out))
     }
 
     // Same manifest, same named outputs — no wires should have dropped.
@@ -215,9 +202,8 @@ test.describe('Pipe nodes (frontend)', () => {
   })
 
   test('nested pipes: outer Pipe Out exposes a PIPE output that an inner Pipe Out unpacks correctly', async ({
-    comfyPage
+    pipePage: page
   }) => {
-    const { page } = comfyPage
 
     // Data flow under test:
     //   strA, strB --> innerPipe (PipeCreate)
@@ -270,22 +256,18 @@ test.describe('Pipe nodes (frontend)', () => {
     await connect(page, innerOut, await outSlot(page, innerOut, kA), previewA, 0)
     await connect(page, innerOut, await outSlot(page, innerOut, kB), previewB, 0)
 
-    await comfyPage.command.executeCommand('Comfy.QueuePrompt')
-
-    const pa = await comfyPage.nodeOps.getNodeRefById(previewA)
-    const pb = await comfyPage.nodeOps.getNodeRefById(previewB)
+    await executeCommand(page, 'Comfy.QueuePrompt')
     await expect
-      .poll(async () => (await pa.getWidget(0)).getValue(), { timeout: 15_000 })
+      .poll(() => widgetValue(page, previewA, 0), { timeout: 15_000 })
       .toBe('A')
     await expect
-      .poll(async () => (await pb.getWidget(0)).getValue(), { timeout: 15_000 })
+      .poll(() => widgetValue(page, previewB, 0), { timeout: 15_000 })
       .toBe('B')
   })
 
   test('disconnecting a PipeCreate input prunes the slot and updates manifest downstream', async ({
-    comfyPage
+    pipePage: page
   }) => {
-    const { page } = comfyPage
 
     const sA = await addNode(page, 'PrimitiveString')
     const sB = await addNode(page, 'PrimitiveString')
@@ -315,9 +297,8 @@ test.describe('Pipe nodes (frontend)', () => {
   })
 
   test('PipeOut keeps surviving downstream wires when an upstream key is removed', async ({
-    comfyPage
+    pipePage: page
   }) => {
-    const { page } = comfyPage
 
     const sA = await addNode(page, 'PrimitiveString')
     const sB = await addNode(page, 'PrimitiveString')
@@ -356,8 +337,7 @@ test.describe('Pipe nodes (frontend)', () => {
     expect(sinkAInfo).toBeNull()
   })
 
-  test('manifest passes through a Reroute node', async ({ comfyPage }) => {
-    const { page } = comfyPage
+  test('manifest passes through a Reroute node', async ({ pipePage: page }) => {
 
     const sA = await addNode(page, 'PrimitiveString')
     const pipeId = await addNode(page, 'PipeCreate')
@@ -374,9 +354,8 @@ test.describe('Pipe nodes (frontend)', () => {
   })
 
   test('changing the inner pipe propagates to the outer nested manifest', async ({
-    comfyPage
+    pipePage: page
   }) => {
-    const { page } = comfyPage
 
     const sA = await addNode(page, 'PrimitiveString')
     const sB = await addNode(page, 'PrimitiveString')
@@ -405,9 +384,8 @@ test.describe('Pipe nodes (frontend)', () => {
   })
 
   test('PipeMerge unions manifests with the chosen collision policy', async ({
-    comfyPage
+    pipePage: page
   }) => {
-    const { page } = comfyPage
 
     // left:  {string: STRING}             — one PrimitiveString
     // right: {string: STRING, int: INT}   — colliding "string" + a unique "int"
@@ -451,9 +429,8 @@ test.describe('Pipe nodes (frontend)', () => {
   })
 
   test('key widget on PipeRemove/PipeGet becomes a dropdown of upstream keys', async ({
-    comfyPage
+    pipePage: page
   }) => {
-    const { page } = comfyPage
 
     const sA = await addNode(page, 'PrimitiveString')
     const sB = await addNode(page, 'PrimitiveString')

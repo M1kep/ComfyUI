@@ -3,27 +3,22 @@
 // the local sandbox isn't exhausted by a single file.
 import { expect } from '@playwright/test'
 
-import { comfyPageFixture as test } from '@e2e/fixtures/ComfyPage'
-
 import {
   addNode,
   bundle,
   connect,
   nodeInfo,
   outSlot,
+  pipeTest as test,
   setWidget,
   slotIndex
 } from './_pipe_helpers'
 
 test.describe('Pipe Pick', () => {
-  test.beforeEach(async ({ comfyPage }) => {
-    await comfyPage.page.evaluate(() => window.app!.graph.clear())
-  })
 
   test('grows a key combo per selection and reshapes outputs', async ({
-    comfyPage
+    pipePage: page
   }) => {
-    const { page } = comfyPage
     const sA = await addNode(page, 'PrimitiveString')
     const sB = await addNode(page, 'PrimitiveString')
     const sC = await addNode(page, 'PrimitiveString')
@@ -59,9 +54,8 @@ test.describe('Pipe Pick', () => {
   })
 
   test('clearing a key drops its output but preserves the surviving wire', async ({
-    comfyPage
+    pipePage: page
   }) => {
-    const { page } = comfyPage
     const sA = await addNode(page, 'PrimitiveString')
     const sB = await addNode(page, 'PrimitiveString')
     const pipeId = await addNode(page, 'PipeCreate')
@@ -89,9 +83,8 @@ test.describe('Pipe Pick', () => {
   })
 
   test('round-trip restores selected keys and outputs', async ({
-    comfyPage
+    pipePage: page
   }) => {
-    const { page } = comfyPage
     const sA = await addNode(page, 'PrimitiveString')
     const sB = await addNode(page, 'PrimitiveString')
     const pipeId = await addNode(page, 'PipeCreate')
@@ -110,21 +103,18 @@ test.describe('Pipe Pick', () => {
     )
     await page.evaluate(async (s) => { await window.app!.loadGraphData(s) }, ser)
 
-    const picks = await comfyPage.nodeOps.getNodeRefsByType('PipePick')
-    const after = await nodeInfo(page, Number(picks[0].id))
+    const pickAfterId = await page.evaluate(() =>
+      Number(window.app!.graph.nodes.find((n) => n.type === 'PipePick')!.id)
+    )
+    const after = await nodeInfo(page, pickAfterId)
     expect(after!.outputs.map((o) => o.name)).toEqual(before)
   })
 })
 
 test.describe('Bundle into Pipe', () => {
-  test.beforeEach(async ({ comfyPage }) => {
-    await comfyPage.page.evaluate(() => window.app!.graph.clear())
-  })
-
   test('wires each selected node\'s first output into a fresh PipeCreate', async ({
-    comfyPage
+    pipePage: page
   }) => {
-    const { page } = comfyPage
     const sA = await addNode(page, 'PrimitiveString')
     const iA = await addNode(page, 'PrimitiveInt')
 
@@ -149,8 +139,7 @@ test.describe('Bundle into Pipe', () => {
     expect(pipeX).toBeGreaterThan(srcRight)
   })
 
-  test('skips selected nodes that have no outputs', async ({ comfyPage }) => {
-    const { page } = comfyPage
+  test('skips selected nodes that have no outputs', async ({ pipePage: page }) => {
     const sA = await addNode(page, 'PrimitiveString')
     const sink = await addNode(page, 'PreviewAny')
 
@@ -162,9 +151,8 @@ test.describe('Bundle into Pipe', () => {
   })
 
   test('bundling a PipeCreate produces a PIPE-typed key with a nested manifest', async ({
-    comfyPage
+    pipePage: page
   }) => {
-    const { page } = comfyPage
     const sA = await addNode(page, 'PrimitiveString')
     const inner = await addNode(page, 'PipeCreate')
     await connect(page, sA, 0, inner, await slotIndex(page, inner, '+'))
@@ -178,9 +166,8 @@ test.describe('Bundle into Pipe', () => {
   })
 
   test('does not steal an existing wire on the bundled output', async ({
-    comfyPage
+    pipePage: page
   }) => {
-    const { page } = comfyPage
     const sA = await addNode(page, 'PrimitiveString')
     const sink = await addNode(page, 'PreviewAny')
     await connect(page, sA, 0, sink, 0)
@@ -195,8 +182,7 @@ test.describe('Bundle into Pipe', () => {
     expect(((await nodeInfo(page, pipeId!))!.manifest as unknown[]).length).toBe(1)
   })
 
-  test('menu item is absent when nothing is selected', async ({ comfyPage }) => {
-    const { page } = comfyPage
+  test('menu item is absent when nothing is selected', async ({ pipePage: page }) => {
     const { menuPresent, pipeId } = await bundle(page, [])
     expect(menuPresent).toBe(false)
     expect(pipeId).toBeNull()
