@@ -38,6 +38,12 @@ function hideWidget(node, name) {
     w.type = "hidden";
     w.hidden = true;
     w.computeSize = () => [0, -4];
+    // The frontend creates a widget-backed input slot for every declared
+    // input so users can convert widgets to sockets. We don't want that for
+    // these internal carriers — drop the slot so dynamic slot indexing is
+    // stable and the user can't accidentally wire into them.
+    const idx = node.inputs?.findIndex((i) => i.widget?.name === name);
+    if (idx != null && idx >= 0) node.removeInput(idx);
 }
 
 function setWidget(node, name, value) {
@@ -151,23 +157,33 @@ function sameManifest(a, b) {
 // PipeCreate: dynamic inputs
 // ---------------------------------------------------------------------------
 
+function isPipeSlot(inp) {
+    return inp && !inp.widget;
+}
+
 function pipeCreateSync(node) {
     // Ensure one trailing empty ANY slot, prune disconnected non-trailing
     // slots, and rebuild the manifest from the current connected inputs.
-    const manifest = [];
-    const inputs = node.inputs ?? [];
-    for (let i = inputs.length - 1; i >= 0; i--) {
-        const inp = inputs[i];
-        if (inp.link == null && i < inputs.length - 1) {
+    // Widget-backed inputs (e.g. `key` on PipeSet if user converts it) are
+    // never treated as pipe slots.
+    let trailing = -1;
+    for (let i = (node.inputs?.length ?? 0) - 1; i >= 0; i--) {
+        if (isPipeSlot(node.inputs[i])) { trailing = i; break; }
+    }
+    for (let i = (node.inputs?.length ?? 0) - 1; i >= 0; i--) {
+        const inp = node.inputs[i];
+        if (isPipeSlot(inp) && inp.link == null && i < trailing) {
             node.removeInput(i);
+            trailing--;
         }
     }
+    const manifest = [];
     for (const inp of node.inputs ?? []) {
-        if (inp.link != null) {
+        if (isPipeSlot(inp) && inp.link != null) {
             manifest.push([inp.name, inp.type === ANY_TYPE ? ANY_TYPE : inp.type]);
         }
     }
-    const last = node.inputs?.[node.inputs.length - 1];
+    const last = trailing >= 0 ? node.inputs[trailing] : null;
     if (!last || last.link != null) {
         node.addInput("+", ANY_TYPE);
     }
@@ -177,6 +193,7 @@ function pipeCreateSync(node) {
 
 function pipeCreateOnConnect(node, slotIndex, link_info) {
     const inp = node.inputs[slotIndex];
+    if (!isPipeSlot(inp)) return;
     const origin = getGraph(node)?.getNodeById?.(link_info.origin_id);
     const otype = origin?.outputs?.[link_info.origin_slot]?.type ?? ANY_TYPE;
     inp.type = otype;
@@ -228,8 +245,18 @@ function pipeCreateMenu(node, options) {
 
 function pipeOutReshape(node, manifest) {
     const prev = node.properties.pipe_manifest ?? [];
-    if (sameManifest(prev, manifest)) {
-        setWidget(node, "_manifest", JSON.stringify(manifest));
+    node.properties.pipe_manifest = manifest;
+    setWidget(node, "_manifest", JSON.stringify(manifest));
+
+    // Manifest unchanged: outputs are already in the right positions, but
+    // workflow load may have reset slot names/types to the nodeDef default —
+    // patch them in place so existing links survive.
+    if (sameManifest(prev, manifest)
+            && (node.outputs?.length ?? 0) === Math.max(1, manifest.length)) {
+        for (let i = 0; i < manifest.length; i++) {
+            node.outputs[i].name = manifest[i][0];
+            node.outputs[i].type = manifest[i][1];
+        }
         return;
     }
 
@@ -267,9 +294,6 @@ function pipeOutReshape(node, manifest) {
             }
         }
     }
-
-    node.properties.pipe_manifest = manifest;
-    setWidget(node, "_manifest", JSON.stringify(manifest));
     node.setSize(node.computeSize());
 }
 

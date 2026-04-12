@@ -1,0 +1,263 @@
+// Browser-level tests for the Pipe node family.
+//
+// These exercise the JS extension in `comfy_extras/nodes_pipe/js/pipe.js`:
+//   - PipeCreate: grow-on-connect input slots with per-slot naming
+//   - PipeOut / PipeGet: dynamic output reshape driven by an upstream
+//     manifest computed by walking Pipe* nodes
+//   - PipeSet / PipeRemove: manifest propagation
+//   - End-to-end queue through the backend so runtime values match the
+//     frontend-declared manifest
+//
+// Graphs are built programmatically rather than loaded from JSON so the
+// full connect path (onConnectionsChange, reshape, serialize) is what we
+// assert against.
+import { expect } from '@playwright/test'
+import type { Page } from '@playwright/test'
+
+import { comfyPageFixture as test } from '@e2e/fixtures/ComfyPage'
+
+async function addNode(page: Page, type: string): Promise<number> {
+  return page.evaluate((type) => {
+    const n = window.LiteGraph!.createNode(type, undefined, {})
+    window.app!.graph.add(n)
+    return Number(n!.id)
+  }, type)
+}
+
+async function connect(
+  page: Page,
+  fromId: number,
+  fromSlot: number,
+  toId: number,
+  toSlot: number
+) {
+  await page.evaluate(
+    ({ fromId, fromSlot, toId, toSlot }) => {
+      const a = window.app!.graph.getNodeById(fromId)!
+      const b = window.app!.graph.getNodeById(toId)!
+      a.connect(fromSlot, b, toSlot)
+    },
+    { fromId, fromSlot, toId, toSlot }
+  )
+}
+
+async function setWidget(page: Page, id: number, name: string, value: unknown) {
+  await page.evaluate(
+    ({ id, name, value }) => {
+      const n = window.app!.graph.getNodeById(id)!
+      const w = n.widgets?.find((w) => w.name === name)
+      if (w) {
+        w.value = value
+        // @ts-expect-error — optional callback used by some widget types
+        w.callback?.(value)
+      }
+    },
+    { id, name, value }
+  )
+}
+
+async function nodeInfo(page: Page, id: number) {
+  return page.evaluate((id) => {
+    const n = window.app!.graph.getNodeById(id)
+    if (!n) return null
+    return {
+      id: n.id,
+      // Only socket inputs (widget-backed slots are an implementation detail
+      // of the frontend and the pipe extension strips/ignores them).
+      inputs: (n.inputs ?? [])
+        .filter((i) => !i.widget)
+        .map((i) => ({
+          name: i.name,
+          type: i.type,
+          linked: i.link != null
+        })),
+      outputs: (n.outputs ?? []).map((o) => ({
+        name: o.name,
+        type: o.type,
+        linkCount: o.links?.length ?? 0
+      })),
+      manifest: (n.properties ?? {}).pipe_manifest ?? null
+    }
+  }, id)
+}
+
+async function slotIndex(page: Page, id: number, name: string): Promise<number> {
+  return page.evaluate(
+    ({ id, name }) => {
+      const n = window.app!.graph.getNodeById(id)!
+      return (n.inputs ?? []).findIndex((i) => i.name === name)
+    },
+    { id, name }
+  )
+}
+
+test.describe('Pipe nodes (frontend)', () => {
+  test.beforeEach(async ({ comfyPage }) => {
+    await comfyPage.page.evaluate(() => window.app!.graph.clear())
+  })
+
+  test('PipeCreate grows a trailing slot and names each key after the upstream', async ({
+    comfyPage
+  }) => {
+    const { page } = comfyPage
+
+    const pipeId = await addNode(page, 'PipeCreate')
+    const sA = await addNode(page, 'PrimitiveString')
+    const sB = await addNode(page, 'PrimitiveString')
+
+    // Fresh Pipe starts with exactly one empty trailing slot.
+    let info = await nodeInfo(page, pipeId)
+    expect(info!.inputs).toHaveLength(1)
+    expect(info!.inputs[0].linked).toBe(false)
+    expect(info!.inputs[0].type).toBe('*')
+
+    await connect(page, sA, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    info = await nodeInfo(page, pipeId)
+    expect(info!.inputs).toHaveLength(2)
+    expect(info!.inputs[0].linked).toBe(true)
+    expect(info!.inputs[0].type).toBe('STRING')
+    expect(info!.inputs[1].linked).toBe(false) // fresh trailing slot
+
+    await connect(page, sB, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    info = await nodeInfo(page, pipeId)
+    expect(info!.inputs).toHaveLength(3)
+    expect(info!.inputs.filter((i) => i.linked)).toHaveLength(2)
+    // Keys are unique (slugified from upstream output name / type).
+    const keys = info!.inputs.filter((i) => i.linked).map((i) => i.name)
+    expect(new Set(keys).size).toBe(keys.length)
+    // Manifest is persisted on properties for workflow JSON round-trip.
+    expect(info!.manifest).toHaveLength(2)
+    for (const [, type] of info!.manifest as [string, string][]) {
+      expect(type).toBe('STRING')
+    }
+  })
+
+  test('PipeOut reshapes outputs from the upstream manifest', async ({
+    comfyPage
+  }) => {
+    const { page } = comfyPage
+
+    const pipeId = await addNode(page, 'PipeCreate')
+    const outId = await addNode(page, 'PipeOut')
+    const sA = await addNode(page, 'PrimitiveString')
+    const sB = await addNode(page, 'PrimitiveString')
+
+    await connect(page, sA, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    await connect(page, sB, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    await connect(page, pipeId, 0, outId, await slotIndex(page, outId, 'pipe'))
+
+    const out = await nodeInfo(page, outId)
+    expect(out!.outputs.length).toBeGreaterThanOrEqual(2)
+    // Output names match the pipe manifest keys, output types STRING.
+    const pipeInfo = await nodeInfo(page, pipeId)
+    const manifestKeys = (pipeInfo!.manifest as [string, string][]).map(
+      ([k]) => k
+    )
+    expect(out!.outputs.map((o) => o.name)).toEqual(manifestKeys)
+    for (const o of out!.outputs) expect(o.type).toBe('STRING')
+  })
+
+  test('PipeSet adds and PipeRemove removes keys downstream', async ({
+    comfyPage
+  }) => {
+    const { page } = comfyPage
+
+    const pipeId = await addNode(page, 'PipeCreate')
+    const setId = await addNode(page, 'PipeSet')
+    const rmId = await addNode(page, 'PipeRemove')
+    const outId = await addNode(page, 'PipeOut')
+    const sA = await addNode(page, 'PrimitiveString')
+    const sB = await addNode(page, 'PrimitiveString')
+
+    await connect(page, sA, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    await connect(page, pipeId, 0, setId, await slotIndex(page, setId, 'pipe'))
+    await setWidget(page, setId, 'key', 'extra')
+    await connect(page, sB, 0, setId, await slotIndex(page, setId, 'value'))
+    await connect(page, setId, 0, rmId, await slotIndex(page, rmId, 'pipe'))
+
+    // Remove the ORIGINAL key (auto-named from the first PrimitiveString).
+    const orig = (await nodeInfo(page, pipeId))!.manifest as [string, string][]
+    const origKey = orig[0][0]
+    await setWidget(page, rmId, 'key', origKey)
+    await connect(page, rmId, 0, outId, await slotIndex(page, outId, 'pipe'))
+
+    const out = await nodeInfo(page, outId)
+    expect(out!.outputs.map((o) => o.name)).toEqual(['extra'])
+    expect(out!.outputs[0].type).toBe('STRING')
+  })
+
+  test('queuing a PipeCreate→PipeGet→PreviewAny graph unpacks the value', async ({
+    comfyPage
+  }) => {
+    const { page } = comfyPage
+
+    const sA = await addNode(page, 'PrimitiveString')
+    await setWidget(page, sA, 'value', 'hello-from-pipe')
+
+    const pipeId = await addNode(page, 'PipeCreate')
+    await connect(page, sA, 0, pipeId, await slotIndex(page, pipeId, '+'))
+
+    const getId = await addNode(page, 'PipeGet')
+    await connect(page, pipeId, 0, getId, await slotIndex(page, getId, 'pipe'))
+    // Set the key to whatever the Pipe auto-named the connected slot.
+    const pipeInfo = await nodeInfo(page, pipeId)
+    const key = (pipeInfo!.manifest as [string, string][])[0][0]
+    await setWidget(page, getId, 'key', key)
+
+    const previewId = await addNode(page, 'PreviewAny')
+    await connect(page, getId, 0, previewId, 0)
+
+    await comfyPage.command.executeCommand('Comfy.QueuePrompt')
+
+    const preview = await comfyPage.nodeOps.getNodeRefById(previewId)
+    await expect
+      .poll(async () => (await preview.getWidget(0)).getValue(), {
+        timeout: 15_000
+      })
+      .toBe('hello-from-pipe')
+  })
+
+  test('workflow round-trip preserves slots and manifest', async ({
+    comfyPage
+  }) => {
+    const { page } = comfyPage
+
+    const pipeId = await addNode(page, 'PipeCreate')
+    const outId = await addNode(page, 'PipeOut')
+    const sA = await addNode(page, 'PrimitiveString')
+    const sB = await addNode(page, 'PrimitiveString')
+    await connect(page, sA, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    await connect(page, sB, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    await connect(page, pipeId, 0, outId, await slotIndex(page, outId, 'pipe'))
+
+    const before = {
+      pipe: await nodeInfo(page, pipeId),
+      out: await nodeInfo(page, outId)
+    }
+
+    // Serialize → clear → load via the same path workflow upload takes
+    // (sets app.configuringGraph and fires afterConfigureGraph).
+    const serialized = await page.evaluate(() =>
+      JSON.parse(JSON.stringify(window.app!.graph.serialize()))
+    )
+    await page.evaluate(async (s) => {
+      await window.app!.loadGraphData(s)
+    }, serialized)
+
+    const pipeNodes = await comfyPage.nodeOps.getNodeRefsByType('PipeCreate')
+    const outNodes = await comfyPage.nodeOps.getNodeRefsByType('PipeOut')
+    expect(pipeNodes).toHaveLength(1)
+    expect(outNodes).toHaveLength(1)
+
+    const after = {
+      pipe: await nodeInfo(page, Number(pipeNodes[0].id)),
+      out: await nodeInfo(page, Number(outNodes[0].id))
+    }
+
+    // Same manifest, same named outputs — no wires should have dropped.
+    expect(after.pipe!.manifest).toEqual(before.pipe!.manifest)
+    expect(after.out!.outputs.map((o) => o.name)).toEqual(
+      before.out!.outputs.map((o) => o.name)
+    )
+  })
+})
