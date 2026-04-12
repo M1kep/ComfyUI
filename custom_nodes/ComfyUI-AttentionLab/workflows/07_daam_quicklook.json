@@ -1,0 +1,27 @@
+{
+  "1": {"class_type": "CheckpointLoaderSimple",
+        "inputs": {"ckpt_name": "v1-5-pruned-emaonly.safetensors"}},
+  "2": {"class_type": "CLIPTextEncode",
+        "inputs": {"clip": ["1", 1], "text": "a fluffy orange cat sitting on a wooden table"}},
+  "3": {"class_type": "CLIPTextEncode",
+        "inputs": {"clip": ["1", 1], "text": "blurry"}},
+  "4": {"class_type": "EmptyLatentImage",
+        "inputs": {"width": 512, "height": 512, "batch_size": 1}},
+
+  "10": {"class_type": "AL_DAAM",
+         "inputs": {"model": ["1", 0], "clip": ["1", 1],
+                    "prompt": "a fluffy orange cat sitting on a wooden table",
+                    "layer_agg": "mean", "t_agg": "mean", "overlay_decoded": true}},
+  "11": {"class_type": "KSampler",
+         "inputs": {"model": ["10", 0], "seed": 42, "steps": 20, "cfg": 7.0,
+                    "sampler_name": "euler", "scheduler": "normal",
+                    "positive": ["2", 0], "negative": ["3", 0],
+                    "latent_image": ["4", 0], "denoise": 1.0}},
+  "12": {"class_type": "VAEDecode", "inputs": {"samples": ["11", 0], "vae": ["1", 2]}},
+  "13": {"class_type": "AL_DAAMRender",
+         "inputs": {"maps": ["10", 2], "latent_trigger": ["11", 0], "overlay": ["12", 0]}},
+  "14": {"class_type": "SaveImage",
+         "inputs": {"images": ["13", 0], "filename_prefix": "AL_daam"}},
+  "15": {"class_type": "SaveImage",
+         "inputs": {"images": ["12", 0], "filename_prefix": "AL_daam_base"}}
+}

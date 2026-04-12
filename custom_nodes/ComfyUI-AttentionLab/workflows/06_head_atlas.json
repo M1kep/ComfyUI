@@ -1,0 +1,20 @@
+{
+  "1": {"class_type": "CheckpointLoaderSimple",
+        "inputs": {"ckpt_name": "v1-5-pruned-emaonly.safetensors"}},
+  "2": {"class_type": "CLIPTextEncode",
+        "inputs": {"clip": ["1", 1], "text": "a portrait of an astronaut, detailed, sharp focus"}},
+  "3": {"class_type": "CLIPTextEncode",
+        "inputs": {"clip": ["1", 1], "text": "blurry, low quality"}},
+  "4": {"class_type": "EmptyLatentImage",
+        "inputs": {"width": 512, "height": 512, "batch_size": 1}},
+
+  "10": {"class_type": "AL_HeadSweep",
+         "inputs": {"model": ["1", 0], "positive": ["2", 0], "negative": ["3", 0],
+                    "latent": ["4", 0], "vae": ["1", 2],
+                    "seed": 42, "steps": 12, "cfg": 7.0,
+                    "sampler_name": "euler", "scheduler": "normal",
+                    "layer": "mid attn2", "sweep": "ablate_each",
+                    "mode": "mean_replace", "cols": 0, "include_baseline": true}},
+  "11": {"class_type": "SaveImage",
+         "inputs": {"images": ["10", 0], "filename_prefix": "AL_head_atlas"}}
+}
