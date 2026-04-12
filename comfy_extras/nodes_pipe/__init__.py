@@ -323,10 +323,46 @@ class PipePick:
         return tuple(out)
 
 
+class PipePreview:
+    """Render a pipe's manifest and a short repr of each value as text in the
+    UI — useful for debugging mid-chain. Passes the pipe through unchanged."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"pipe": ("PIPE",)}}
+
+    RETURN_TYPES = ("PIPE",)
+    RETURN_NAMES = ("pipe",)
+    OUTPUT_NODE = True
+    FUNCTION = "execute"
+    CATEGORY = "utils/pipe"
+
+    @staticmethod
+    def _format(pipe):
+        if not pipe.values:
+            return "(empty pipe)"
+        rows = []
+        for k, t in pipe.manifest():
+            v = pipe.values.get(k)
+            try:
+                rep = repr(v)
+            except Exception:
+                rep = f"<{type(v).__name__}>"
+            if len(rep) > 60:
+                rep = rep[:57] + "..."
+            rows.append(f"{k}: {t} = {rep}")
+        return "\n".join(rows)
+
+    def execute(self, pipe):
+        pipe = _require_pipe(pipe, "Pipe Preview")
+        return {"ui": {"text": (self._format(pipe),)}, "result": (pipe,)}
+
+
 NODE_CLASS_MAPPINGS = {
     "PipeCreate": PipeCreate,
     "PipeOut": PipeOut,
     "PipePick": PipePick,
+    "PipePreview": PipePreview,
     "PipeSet": PipeSet,
     "PipeRemove": PipeRemove,
     "PipeGet": PipeGet,
@@ -337,6 +373,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "PipeCreate": "Pipe",
     "PipeOut": "Pipe Out",
     "PipePick": "Pipe Pick",
+    "PipePreview": "Pipe Preview",
     "PipeSet": "Pipe Set",
     "PipeRemove": "Pipe Remove",
     "PipeGet": "Pipe Get",

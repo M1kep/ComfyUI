@@ -9,6 +9,7 @@ from comfy_extras.nodes_pipe import (
     PipeMerge,
     PipeOut,
     PipePick,
+    PipePreview,
     PipeRemove,
     PipeSet,
     PipeValue,
@@ -142,6 +143,31 @@ def test_pipe_get():
         PipeGet().execute(p, "b")
     with pytest.raises(PipeError, match="expected type MODEL"):
         PipeGet().execute(p, "a", _value_type="MODEL")
+
+
+# ---------------------------------------------------------------------------
+# PipePreview
+# ---------------------------------------------------------------------------
+
+def test_pipe_preview_formats_manifest_and_passthrough():
+    p = PipeValue({"a": 1, "msg": "hello"}, {"a": "INT", "msg": "STRING"})
+    out = PipePreview().execute(p)
+    assert out["result"][0] is p
+    text = out["ui"]["text"][0]
+    assert "a: INT = 1" in text
+    assert "msg: STRING = 'hello'" in text
+
+
+def test_pipe_preview_truncates_long_reprs():
+    long = "x" * 200
+    p = PipeValue({"s": long}, {"s": "STRING"})
+    text = PipePreview._format(p)
+    assert len(text.splitlines()[0]) < 100
+    assert text.endswith("...")
+
+
+def test_pipe_preview_empty():
+    assert PipePreview._format(PipeValue()) == "(empty pipe)"
 
 
 # ---------------------------------------------------------------------------
