@@ -20,6 +20,104 @@ import {
 } from './_pipe_helpers'
 
 test.describe('Pipe nodes (frontend)', () => {
+  test.describe('declared typed inputs on PipeCreate', () => {
+    /** Reach into pipe.js and add a declared slot without going through the
+     *  prompt() UI (which Playwright can't drive on a worker-scoped page). */
+    const addDeclared = (
+      page: import('@playwright/test').Page,
+      id: number,
+      name: string,
+      type: string
+    ) =>
+      page.evaluate(({ id, name, type }) => {
+        const ext = (window as any).app.extensions.find(
+          (e: any) => e.name === 'Comfy.PipeNodes'
+        )
+        // The extension exposes pipeCreateAddDeclared via __pipeTest hook.
+        ext.__pipeTest.addDeclared(
+          window.app!.graph.getNodeById(id),
+          name,
+          type
+        )
+      }, { id, name, type })
+
+    test('declared slot keeps its type and is not pruned on disconnect', async ({
+      pipePage: page
+    }) => {
+      const pipeId = await addNode(page, 'PipeCreate')
+      await addDeclared(page, pipeId, 'model', 'MODEL')
+
+      let info = await nodeInfo(page, pipeId)
+      // declared slot + trailing "+"
+      expect(info!.inputs.map((i) => i.name)).toEqual(['model', '+'])
+      expect(info!.inputs[0].type).toBe('MODEL')
+
+      // Wire a STRING into it should be REFUSED by LiteGraph (type mismatch).
+      const sStr = await addNode(page, 'PrimitiveString')
+      await connect(page, sStr, 0, pipeId, await slotIndex(page, pipeId, 'model'))
+      info = await nodeInfo(page, pipeId)
+      expect(info!.inputs[0].linked).toBe(false)
+      expect(info!.inputs[0].type).toBe('MODEL')
+
+      // Wire then disconnect a compatible source: type stays declared, slot
+      // is not pruned.
+      const sAny = await addNode(page, 'PipeCreate')
+      await addDeclared(page, sAny, 'm', 'MODEL')
+      // sAny has no MODEL output, so use a Reroute typed via the declared
+      // slot to fake a MODEL producer instead — simpler: just verify the
+      // disconnect path directly by connecting the PIPE output to the "+"
+      // slot and confirming the declared 'model' slot is untouched.
+      await connect(page, sAny, 0, pipeId, await slotIndex(page, pipeId, '+'))
+      await page.evaluate(({ pipeId }) => {
+        const n = window.app!.graph.getNodeById(pipeId)!
+        const idx = n.inputs.findIndex((i) => i.link != null && !i.widget)
+        n.disconnectInput(idx)
+      }, { pipeId })
+      info = await nodeInfo(page, pipeId)
+      expect(info!.inputs.some((i) => i.name === 'model' && i.type === 'MODEL'))
+        .toBe(true)
+    })
+
+    test('declared slots round-trip through serialize/load', async ({
+      pipePage: page
+    }) => {
+      const pipeId = await addNode(page, 'PipeCreate')
+      await addDeclared(page, pipeId, 'model', 'MODEL')
+      await addDeclared(page, pipeId, 'clip', 'CLIP')
+
+      const before = (await nodeInfo(page, pipeId))!.inputs
+        .filter((i) => i.name !== '+')
+      const ser = await page.evaluate(() =>
+        JSON.parse(JSON.stringify(window.app!.graph.serialize()))
+      )
+      await page.evaluate(async (s) => { await window.app!.loadGraphData(s) }, ser)
+
+      const id2 = await page.evaluate(() =>
+        Number(window.app!.graph.nodes.find((n) => n.type === 'PipeCreate')!.id)
+      )
+      const after = (await nodeInfo(page, id2))!.inputs
+        .filter((i) => i.name !== '+')
+      expect(after.map((i) => [i.name, i.type]))
+        .toEqual(before.map((i) => [i.name, i.type]))
+    })
+
+    test('context menu offers Add typed input + remove for declared', async ({
+      pipePage: page
+    }) => {
+      const pipeId = await addNode(page, 'PipeCreate')
+      await addDeclared(page, pipeId, 'model', 'MODEL')
+      const items = await page.evaluate((id) => {
+        const n = window.app!.graph.getNodeById(id)!
+        const opts: any[] = []
+        n.getExtraMenuOptions?.(window.app!.canvas, opts)
+        return opts.filter(Boolean).map((o) => o.content as string)
+      }, pipeId)
+      expect(items).toContain('Add typed input…')
+      expect(items.some((s) => s.includes("Remove declared input 'model'")))
+        .toBe(true)
+    })
+  })
+
 
   test('PipeCreate grows a trailing slot and names each key after the upstream', async ({
     pipePage: page

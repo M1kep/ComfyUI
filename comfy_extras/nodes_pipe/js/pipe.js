@@ -192,10 +192,14 @@ function isPipeSlot(inp) {
     return inp && !inp.widget;
 }
 
+function isDeclared(node, inp) {
+    return (node.properties?.pipe_declared ?? []).includes(inp.name);
+}
+
 function pipeCreateSync(node) {
     // Ensure one trailing empty ANY slot, prune disconnected non-trailing
-    // slots, and rebuild the manifest from the current connected inputs.
-    // Widget-backed inputs (e.g. `key` on PipeSet if user converts it) are
+    // ad-hoc slots (declared slots are kept even when empty), and rebuild the
+    // manifest from the current connected inputs. Widget-backed inputs are
     // never treated as pipe slots.
     let trailing = -1;
     for (let i = (node.inputs?.length ?? 0) - 1; i >= 0; i--) {
@@ -203,7 +207,8 @@ function pipeCreateSync(node) {
     }
     for (let i = (node.inputs?.length ?? 0) - 1; i >= 0; i--) {
         const inp = node.inputs[i];
-        if (isPipeSlot(inp) && inp.link == null && i < trailing) {
+        if (isPipeSlot(inp) && inp.link == null && i < trailing
+                && !isDeclared(node, inp)) {
             node.removeInput(i);
             trailing--;
         }
@@ -221,7 +226,7 @@ function pipeCreateSync(node) {
         manifest.push(entryFor(inp.name, t, nested));
     }
     const last = trailing >= 0 ? node.inputs[trailing] : null;
-    if (!last || last.link != null) {
+    if (!last || last.link != null || isDeclared(node, last)) {
         node.addInput("+", ANY_TYPE);
     }
     node.properties.pipe_manifest = manifest;
@@ -233,7 +238,8 @@ function pipeCreateOnConnect(node, slotIndex, link_info) {
     if (!isPipeSlot(inp)) return;
     const origin = getGraph(node)?.getNodeById?.(link_info.origin_id);
     const otype = origin?.outputs?.[link_info.origin_slot]?.type ?? ANY_TYPE;
-    inp.type = otype;
+    // Declared slots keep their authored type; ad-hoc slots adopt upstream's.
+    if (!isDeclared(node, inp)) inp.type = otype;
     if (inp.name === "+" || inp.name === "") {
         const oname = origin?.outputs?.[link_info.origin_slot]?.name || otype;
         inp.name = uniqueKey(node, slugify(oname));
@@ -259,23 +265,70 @@ function uniqueKey(node, base) {
     return `${base}_${n}`;
 }
 
+function pipeCreateAddDeclared(node, name, type) {
+    name = uniqueKey(node, slugify(name || type));
+    type = String(type || ANY_TYPE).trim().toUpperCase();
+    node.properties.pipe_declared = [
+        ...(node.properties.pipe_declared ?? []), name,
+    ];
+    // Insert before the trailing "+" so the grow slot stays last.
+    const plus = (node.inputs ?? []).findIndex((i) => i.name === "+");
+    node.addInput(name, type);
+    if (plus >= 0 && plus < node.inputs.length - 1) {
+        const [slot] = node.inputs.splice(node.inputs.length - 1, 1);
+        node.inputs.splice(plus, 0, slot);
+    }
+    pipeCreateSync(node);
+    refreshDownstream(node);
+    node.setDirtyCanvas(true, true);
+}
+
 function pipeCreateMenu(node, options) {
-    options.push(null);
+    options.push(null, {
+        content: "Add typed input…",
+        callback: () => {
+            const type = prompt("Slot type (e.g. MODEL, CLIP, VAE)", "");
+            if (!type) return;
+            const name = prompt("Slot name", slugify(type));
+            pipeCreateAddDeclared(node, name, type);
+        },
+    });
     for (let i = 0; i < (node.inputs?.length ?? 0); i++) {
         const inp = node.inputs[i];
-        if (inp.link == null) continue;
+        if (!isPipeSlot(inp) || inp.name === "+") continue;
+        const declared = isDeclared(node, inp);
         options.push({
-            content: `Rename pipe key '${inp.name}'`,
+            content: `Rename pipe key '${inp.name}'${declared ? " (declared)" : ""}`,
             callback: () => {
                 const v = prompt("Pipe key name", inp.name);
                 if (v && v !== inp.name) {
+                    const old = inp.name;
                     inp.name = uniqueKey(node, slugify(v));
+                    if (declared) {
+                        node.properties.pipe_declared =
+                            node.properties.pipe_declared.map(
+                                (n) => (n === old ? inp.name : n),
+                            );
+                    }
                     pipeCreateSync(node);
                     refreshDownstream(node);
                     node.setDirtyCanvas(true, true);
                 }
             },
         });
+        if (declared) {
+            options.push({
+                content: `Remove declared input '${inp.name}'`,
+                callback: () => {
+                    node.properties.pipe_declared =
+                        node.properties.pipe_declared.filter((n) => n !== inp.name);
+                    node.removeInput(i);
+                    pipeCreateSync(node);
+                    refreshDownstream(node);
+                    node.setDirtyCanvas(true, true);
+                },
+            });
+        }
     }
 }
 
@@ -527,6 +580,8 @@ function bundleSelectionIntoPipe(canvas) {
 app.registerExtension({
     name: "Comfy.PipeNodes",
 
+    __pipeTest: { addDeclared: pipeCreateAddDeclared },
+
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (!PIPE_NODES.has(nodeData.name)) return;
 
@@ -578,7 +633,8 @@ app.registerExtension({
                 if (nodeData.name === NODE_PIPE && kind === 1) {
                     if (connected && link_info) {
                         pipeCreateOnConnect(this, slot, link_info);
-                    } else if (!connected && this.inputs?.[slot]) {
+                    } else if (!connected && this.inputs?.[slot]
+                            && !isDeclared(this, this.inputs[slot])) {
                         this.inputs[slot].type = ANY_TYPE;
                     }
                     pipeCreateSync(this);
