@@ -97,6 +97,39 @@ async function slotIndex(page: Page, id: number, name: string): Promise<number> 
   )
 }
 
+/** Invoke the "Bundle into Pipe" canvas-menu callback for the given node ids
+ *  (or report it absent). Returns the new PipeCreate's id, or null. */
+async function bundle(
+  page: Page,
+  ids: number[]
+): Promise<{ pipeId: number | null; menuPresent: boolean }> {
+  return page.evaluate((ids) => {
+    const canvas = window.app!.canvas
+    canvas.selected_nodes = Object.fromEntries(
+      ids.map((id) => [id, window.app!.graph.getNodeById(id)])
+    )
+    const items: any[] = []
+    // @ts-expect-error — frontend extension hook
+    for (const ext of window.app!.extensions ?? []) {
+      if (typeof ext.getCanvasMenuItems === 'function') {
+        items.push(...(ext.getCanvasMenuItems(canvas) ?? []))
+      }
+    }
+    const item = items.find((i) => i && /Bundle .* into Pipe/.test(i.content))
+    if (!item) return { pipeId: null, menuPresent: false }
+    const before = new Set(
+      window.app!.graph.nodes
+        .filter((n) => n.type === 'PipeCreate')
+        .map((n) => n.id)
+    )
+    item.callback()
+    const created = window.app!.graph.nodes.find(
+      (n) => n.type === 'PipeCreate' && !before.has(n.id)
+    )
+    return { pipeId: created ? Number(created.id) : null, menuPresent: true }
+  }, ids)
+}
+
 async function outSlot(page: Page, id: number, name: string): Promise<number> {
   return page.evaluate(
     ({ id, name }) => {
@@ -574,53 +607,89 @@ test.describe('Pipe nodes (frontend)', () => {
     expect(get.values).toEqual(keys)
   })
 
-  test('Bundle into Pipe wires each selected node\'s first output into a fresh PipeCreate', async ({
-    comfyPage
-  }) => {
-    const { page } = comfyPage
+  test.describe('Bundle into Pipe', () => {
+    test('wires each selected node\'s first output into a fresh PipeCreate', async ({
+      comfyPage
+    }) => {
+      const { page } = comfyPage
+      const sA = await addNode(page, 'PrimitiveString')
+      const iA = await addNode(page, 'PrimitiveInt')
 
-    const sA = await addNode(page, 'PrimitiveString')
-    const iA = await addNode(page, 'PrimitiveInt')
+      const { pipeId, menuPresent } = await bundle(page, [sA, iA])
+      expect(menuPresent).toBe(true)
+      expect(pipeId).not.toBeNull()
 
-    const pipeId = await page.evaluate(({ sA, iA }) => {
-      const canvas = window.app!.canvas
-      // Programmatically select; UI selection helpers vary by frontend version.
-      canvas.selected_nodes = {
-        [sA]: window.app!.graph.getNodeById(sA),
-        [iA]: window.app!.graph.getNodeById(iA),
-      }
-      // Find and invoke the menu item the extension contributed.
-      const items: any[] = []
-      // @ts-expect-error — frontend extension hook
-      for (const ext of window.app!.extensions ?? []) {
-        if (typeof ext.getCanvasMenuItems === 'function') {
-          items.push(...(ext.getCanvasMenuItems(canvas) ?? []))
-        }
-      }
-      const item = items.find((i) => i && /Bundle .* into Pipe/.test(i.content))
-      if (!item) throw new Error('Bundle into Pipe menu item not found')
-      item.callback()
-      return Number(
-        window.app!.graph.nodes.find((n) => n.type === 'PipeCreate')!.id
+      const info = await nodeInfo(page, pipeId!)
+      expect((info!.manifest as unknown[]).length).toBe(2)
+      const types = (info!.manifest as [string, string][])
+        .map(([, t]) => t).sort()
+      expect(types).toEqual(['INT', 'STRING'])
+
+      const [pipeX, srcRight] = await page.evaluate(
+        ({ pipeId, sA }) => {
+          const p = window.app!.graph.getNodeById(pipeId)!
+          const s = window.app!.graph.getNodeById(sA)!
+          return [p.pos[0], s.pos[0] + s.size[0]]
+        },
+        { pipeId: pipeId!, sA }
       )
-    }, { sA, iA })
+      expect(pipeX).toBeGreaterThan(srcRight)
+    })
 
-    const info = await nodeInfo(page, pipeId)
-    expect((info!.manifest as unknown[]).length).toBe(2)
-    const types = (info!.manifest as [string, string][]).map(([, t]) => t).sort()
-    expect(types).toEqual(['INT', 'STRING'])
-    // Positioned to the right of the selection.
-    const pipePos = await page.evaluate(
-      (id) => window.app!.graph.getNodeById(id)!.pos[0],
-      pipeId
-    )
-    const srcPos = await page.evaluate(
-      (id) => {
-        const n = window.app!.graph.getNodeById(id)!
-        return n.pos[0] + n.size[0]
-      },
-      sA
-    )
-    expect(pipePos).toBeGreaterThan(srcPos)
+    test('skips selected nodes that have no outputs', async ({ comfyPage }) => {
+      const { page } = comfyPage
+      const sA = await addNode(page, 'PrimitiveString')
+      const sink = await addNode(page, 'PreviewAny') // no outputs
+
+      const { pipeId } = await bundle(page, [sA, sink])
+      expect(pipeId).not.toBeNull()
+      const m = (await nodeInfo(page, pipeId!))!.manifest as [string, string][]
+      expect(m).toHaveLength(1)
+      expect(m[0][1]).toBe('STRING')
+    })
+
+    test('bundling a PipeCreate produces a PIPE-typed key with a nested manifest', async ({
+      comfyPage
+    }) => {
+      const { page } = comfyPage
+      const sA = await addNode(page, 'PrimitiveString')
+      const inner = await addNode(page, 'PipeCreate')
+      await connect(page, sA, 0, inner, await slotIndex(page, inner, '+'))
+
+      const { pipeId } = await bundle(page, [inner])
+      expect(pipeId).not.toBeNull()
+      const m = (await nodeInfo(page, pipeId!))!.manifest as unknown[][]
+      expect(m).toHaveLength(1)
+      expect(m[0][1]).toBe('PIPE')
+      // Nested manifest is captured.
+      expect((m[0][2] as unknown[]).length).toBe(1)
+    })
+
+    test('does not steal an existing wire on the bundled output', async ({
+      comfyPage
+    }) => {
+      const { page } = comfyPage
+      const sA = await addNode(page, 'PrimitiveString')
+      const sink = await addNode(page, 'PreviewAny')
+      await connect(page, sA, 0, sink, 0)
+
+      const { pipeId } = await bundle(page, [sA])
+      expect(pipeId).not.toBeNull()
+      // Original wire is still there.
+      const sinkLink = await page.evaluate(
+        (id) => window.app!.graph.getNodeById(id)!.inputs[0].link,
+        sink
+      )
+      expect(sinkLink).not.toBeNull()
+      // And the new pipe also has it.
+      expect(((await nodeInfo(page, pipeId!))!.manifest as unknown[]).length).toBe(1)
+    })
+
+    test('menu item is absent when nothing is selected', async ({ comfyPage }) => {
+      const { page } = comfyPage
+      const { menuPresent, pipeId } = await bundle(page, [])
+      expect(menuPresent).toBe(false)
+      expect(pipeId).toBeNull()
+    })
   })
 })
