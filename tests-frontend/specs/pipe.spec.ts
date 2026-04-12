@@ -450,4 +450,85 @@ test.describe('Pipe nodes (frontend)', () => {
     expect(refreshed!.outputs).toHaveLength(2)
     for (const o of refreshed!.outputs) expect(o.type).toBe('STRING')
   })
+
+  test('PipeMerge unions manifests with the chosen collision policy', async ({
+    comfyPage
+  }) => {
+    const { page } = comfyPage
+
+    // left:  {string: STRING}             — one PrimitiveString
+    // right: {string: STRING, int: INT}   — colliding "string" + a unique "int"
+    // (key names come from slugify(upstream output name))
+    const sL = await addNode(page, 'PrimitiveString')
+    const sR = await addNode(page, 'PrimitiveString')
+    const iR = await addNode(page, 'PrimitiveInt')
+    const left = await addNode(page, 'PipeCreate')
+    const right = await addNode(page, 'PipeCreate')
+    const merge = await addNode(page, 'PipeMerge')
+    const out = await addNode(page, 'PipeOut')
+
+    await connect(page, sL, 0, left, await slotIndex(page, left, '+'))
+    await connect(page, sR, 0, right, await slotIndex(page, right, '+'))
+    await connect(page, iR, 0, right, await slotIndex(page, right, '+'))
+
+    const lKeys = ((await nodeInfo(page, left))!.manifest as [string, string][])
+      .map(([k]) => k)
+    const rKeys = ((await nodeInfo(page, right))!.manifest as [string, string][])
+      .map(([k]) => k)
+    expect(lKeys).toHaveLength(1)
+    expect(rKeys).toHaveLength(2)
+    // Collision: left's only key is also right's first key.
+    expect(rKeys).toContain(lKeys[0])
+
+    await connect(page, left, 0, merge, await slotIndex(page, merge, 'a'))
+    await connect(page, right, 0, merge, await slotIndex(page, merge, 'b'))
+    await connect(page, merge, 0, out, await slotIndex(page, out, 'pipe'))
+
+    // Union (right_wins by default) — keys are the union, in left-then-right
+    // order.
+    const expected = [...new Set([...lKeys, ...rKeys])]
+    let outInfo = await nodeInfo(page, out)
+    expect(outInfo!.outputs.map((o) => o.name)).toEqual(expected)
+
+    // Flip the collision policy and confirm the downstream re-walk fires
+    // (surface keys don't change here since both colliding entries are STRING).
+    await setWidget(page, merge, 'collision', 'left_wins')
+    outInfo = await nodeInfo(page, out)
+    expect(outInfo!.outputs.map((o) => o.name)).toEqual(expected)
+  })
+
+  test('key widget on PipeRemove/PipeGet becomes a dropdown of upstream keys', async ({
+    comfyPage
+  }) => {
+    const { page } = comfyPage
+
+    const sA = await addNode(page, 'PrimitiveString')
+    const sB = await addNode(page, 'PrimitiveString')
+    const pipeId = await addNode(page, 'PipeCreate')
+    const rmId = await addNode(page, 'PipeRemove')
+    const getId = await addNode(page, 'PipeGet')
+
+    await connect(page, sA, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    await connect(page, sB, 0, pipeId, await slotIndex(page, pipeId, '+'))
+    const keys = ((await nodeInfo(page, pipeId))!.manifest as [string, string][])
+      .map(([k]) => k)
+
+    await connect(page, pipeId, 0, rmId, await slotIndex(page, rmId, 'pipe'))
+    await connect(page, pipeId, 0, getId, await slotIndex(page, getId, 'pipe'))
+
+    const widgetInfo = (id: number) => page.evaluate((id) => {
+      const n = window.app!.graph.getNodeById(id)!
+      const w = n.widgets!.find((w) => w.name === 'key')!
+      return { type: w.type, values: (w.options as any)?.values, value: w.value }
+    }, id)
+
+    const rm = await widgetInfo(rmId)
+    expect(rm.type).toBe('combo')
+    expect(rm.values).toEqual(keys)
+    expect(keys).toContain(rm.value)
+
+    const get = await widgetInfo(getId)
+    expect(get.type).toBe('combo')
+    expect(get.values).toEqual(keys)
+  })
 })

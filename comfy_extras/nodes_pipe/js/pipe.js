@@ -333,6 +333,7 @@ function pipeOutReshape(node, manifest) {
 }
 
 function pipeGetReshape(node, manifest) {
+    populateKeyDropdown(node, manifest);
     const key = getWidget(node, "key");
     const entry = manifest.find(([k]) => k === key);
     const type = entry ? entry[1] : ANY_TYPE;
@@ -342,6 +343,19 @@ function pipeGetReshape(node, manifest) {
     }
     setWidget(node, "_value_type", type);
     node.properties.pipe_manifest = manifest;
+}
+
+// Convert the `key` text widget on PipeRemove / PipeGet into a combo whose
+// options reflect the upstream manifest. Preserves the current value (so a
+// stale key from a workflow load is still visible / editable).
+function populateKeyDropdown(node, manifest) {
+    const w = findWidget(node, "key");
+    if (!w) return;
+    const keys = manifestKeys(manifest);
+    if (w.value && !keys.includes(w.value)) keys.push(w.value);
+    w.type = "combo";
+    w.options = { ...(w.options ?? {}), values: keys };
+    if (!w.value && keys.length) w.value = keys[0];
 }
 
 // ---------------------------------------------------------------------------
@@ -363,6 +377,9 @@ function refreshNode(node, seen) {
         pipeCreateSync(node);
         refreshDownstream(node, seen);
     } else if (type === NODE_REMOVE || type === NODE_SET || type === NODE_MERGE) {
+        if (type === NODE_REMOVE) {
+            populateKeyDropdown(node, computeManifest(node, "pipe"));
+        }
         refreshDownstream(node, seen);
     }
 }
@@ -455,6 +472,10 @@ app.registerExtension({
                     (nodeData.name === NODE_REMOVE || nodeData.name === NODE_MERGE)
                     && kind === 1
                 ) {
+                    if (nodeData.name === NODE_REMOVE
+                            && this.inputs?.[slot]?.name === "pipe") {
+                        populateKeyDropdown(this, computeManifest(this, "pipe"));
+                    }
                     refreshDownstream(this);
                 }
             } finally {
@@ -509,6 +530,8 @@ app.registerExtension({
                 }
                 if (type === NODE_OUT) pipeOutReshape(node, fresh);
                 else pipeGetReshape(node, fresh);
+            } else if (type === NODE_REMOVE) {
+                populateKeyDropdown(node, computeManifest(node, "pipe"));
             }
         }
     },

@@ -37,6 +37,10 @@ def test_parse_manifest_forms():
         ("a", "MODEL"), ("b", "CLIP"),
     ]
     assert _parse_manifest('{"a":"MODEL"}') == [("a", "MODEL")]
+    # 3-element entries (nested manifests for the frontend) are tolerated.
+    assert _parse_manifest('[["inner","PIPE",[["x","CLIP"]]]]') == [
+        ("inner", "PIPE"),
+    ]
 
 
 def test_pipe_value_is_reference_preserving():
