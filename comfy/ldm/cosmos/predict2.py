@@ -9,7 +9,6 @@ from typing import Callable, Optional, Tuple
 import math
 
 from .position_embedding import VideoRopePosition3DEmb, LearnablePosEmbAxis
-from torchvision import transforms
 
 import comfy.patcher_extension
 from comfy.ldm.modules.attention import optimized_attention
@@ -786,6 +785,7 @@ class MiniTrainDIT(nn.Module):
             if padding_mask is None:
                 padding_mask = torch.zeros(x_B_C_T_H_W.shape[0], 1, x_B_C_T_H_W.shape[3], x_B_C_T_H_W.shape[4], dtype=x_B_C_T_H_W.dtype, device=x_B_C_T_H_W.device)
             else:
+                from torchvision import transforms
                 padding_mask = transforms.functional.resize(
                     padding_mask, list(x_B_C_T_H_W.shape[-2:]), interpolation=transforms.InterpolationMode.NEAREST
                 )

@@ -1,7 +1,6 @@
 import nodes
 import node_helpers
 import torch
-import torchvision.transforms.functional as TF
 import comfy.model_management
 import comfy.utils
 import numpy as np
@@ -273,6 +272,7 @@ class WanMoveVisualizeTracks(io.ComfyNode):
             repeat_count = track_path.shape[1] // images.shape[0]
             images_in = images_in.repeat(repeat_count, 1, 1, 1)
         track_video = draw_tracks_on_video(images_in, track_path, track_visibility, track_frame=line_resolution, circle_size=circle_size, opacity=opacity, line_width=line_width)
+        import torchvision.transforms.functional as TF
         track_video = torch.stack([TF.to_tensor(frame) for frame in track_video], dim=0).movedim(1, -1).float()
 
         return io.NodeOutput(track_video.to(comfy.model_management.intermediate_device()))

@@ -1,7 +1,6 @@
 import math
 from functools import partial
 
-from scipy import integrate
 import torch
 from torch import nn
 import torchsde
@@ -402,6 +401,7 @@ def sample_dpm_2_ancestral_RF(model, x, sigmas, extra_args=None, callback=None, 
     return x
 
 def linear_multistep_coeff(order, t, i, j):
+    from scipy import integrate
     if order - 1 > i:
         raise ValueError(f'Order {order} too high for step {i}')
     def fn(tau):

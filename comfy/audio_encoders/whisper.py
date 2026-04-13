@@ -1,13 +1,13 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchaudio
 from typing import Optional
 from comfy.ldm.modules.attention import optimized_attention_masked
 import comfy.ops
 
 class WhisperFeatureExtractor(nn.Module):
     def __init__(self, n_mels=128, device=None):
+        import torchaudio
         super().__init__()
         self.sample_rate = 16000
         self.n_fft = 400

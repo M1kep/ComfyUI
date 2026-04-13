@@ -16,7 +16,6 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-import torchvision
 from torch import nn
 from .common import LayerNorm2d_op
 
@@ -45,6 +44,7 @@ class ControlNet(nn.Module):
         self.proj_blocks = proj_blocks
         if bottleneck_mode == 'effnet':
             embd_channels = 1280
+            import torchvision
             self.backbone = torchvision.models.efficientnet_v2_s().features.eval()
             if c_in != 3:
                 in_weights = self.backbone[0][0].weight.data

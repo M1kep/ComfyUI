@@ -22,7 +22,6 @@ from typing import Optional, Tuple
 import torch
 from einops import rearrange
 from torch import nn
-from torchvision import transforms
 
 from enum import Enum
 import logging
@@ -281,6 +280,7 @@ class GeneralDIT(nn.Module):
         """
         if self.concat_padding_mask:
             if padding_mask is not None:
+                from torchvision import transforms
                 padding_mask = transforms.functional.resize(
                     padding_mask, list(x_B_C_T_H_W.shape[-2:]), interpolation=transforms.InterpolationMode.NEAREST
                 )

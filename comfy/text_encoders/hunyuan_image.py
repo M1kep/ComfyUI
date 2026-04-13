@@ -1,14 +1,13 @@
 from comfy import sd1_clip
 import comfy.text_encoders.llama
 from .qwen_image import QwenImageTokenizer, QwenImageTEModel
-from transformers import ByT5Tokenizer
 import os
 import re
 
 class ByT5SmallTokenizer(sd1_clip.SDTokenizer):
     def __init__(self, embedding_directory=None, tokenizer_data={}):
         tokenizer_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "byt5_tokenizer")
-        super().__init__(tokenizer_path, pad_with_end=False, embedding_size=1472, embedding_key='byt5_small', tokenizer_class=ByT5Tokenizer, has_start_token=False, pad_to_max_length=False, max_length=99999999, min_length=1, tokenizer_data=tokenizer_data)
+        super().__init__(tokenizer_path, pad_with_end=False, embedding_size=1472, embedding_key='byt5_small', tokenizer_class="ByT5Tokenizer", has_start_token=False, pad_to_max_length=False, max_length=99999999, min_length=1, tokenizer_data=tokenizer_data)
 
 class HunyuanImageTokenizer(QwenImageTokenizer):
     def __init__(self, embedding_directory=None, tokenizer_data={}):

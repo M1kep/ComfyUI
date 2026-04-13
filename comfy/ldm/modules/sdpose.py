@@ -1,6 +1,5 @@
 import torch
 import numpy as np
-from scipy.ndimage import gaussian_filter
 
 class HeatmapHead(torch.nn.Module):
     def __init__(
@@ -64,6 +63,7 @@ class HeatmapHead(torch.nn.Module):
         self.final_layer = operations.Conv2d(in_channels, out_channels, kernel_size=final_layer_kernel_size, padding=final_layer_kernel_size // 2, device=device, dtype=dtype)
 
     def forward(self, x): # Decode heatmaps to keypoints
+        from scipy.ndimage import gaussian_filter
         heatmaps = self.final_layer(self.conv_layers(self.deconv_layers(x)))
         heatmaps_np = heatmaps.float().cpu().numpy()  # (B, K, H, W)
         B, K, H, W = heatmaps_np.shape

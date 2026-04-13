@@ -1,5 +1,4 @@
 import numpy as np
-import scipy.ndimage
 import torch
 import comfy.utils
 import node_helpers
@@ -359,6 +358,7 @@ class GrowMask(IO.ComfyNode):
         kernel = np.array([[c, 1, c],
                            [1, 1, 1],
                            [c, 1, c]])
+        import scipy.ndimage
         mask = mask.reshape((-1, mask.shape[-2], mask.shape[-1]))
         out = []
         for m in mask:

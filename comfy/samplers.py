@@ -17,7 +17,6 @@ import comfy.patcher_extension
 import comfy.hooks
 import comfy.context_windows
 import comfy.utils
-import scipy.stats
 import numpy
 
 
@@ -454,6 +453,7 @@ def normal_scheduler(model_sampling, steps, sgm=False, floor=False):
 
 # Implemented based on: https://arxiv.org/abs/2407.12173
 def beta_scheduler(model_sampling, steps, alpha=0.6, beta=0.6):
+    import scipy.stats
     total_timesteps = (len(model_sampling.sigmas) - 1)
     ts = 1 - numpy.linspace(0, 1, steps, endpoint=False)
     ts = numpy.rint(scipy.stats.beta.ppf(ts, alpha, beta) * total_timesteps)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import av
-import torchaudio
 import torch
 import comfy.model_management
 import folder_paths
@@ -85,6 +84,7 @@ class VAEEncodeAudio(IO.ComfyNode):
         sample_rate = audio["sample_rate"]
         vae_sample_rate = getattr(vae, "audio_sample_rate", 44100)
         if vae_sample_rate != sample_rate:
+            import torchaudio
             waveform = torchaudio.functional.resample(audio["waveform"], sample_rate, vae_sample_rate)
         else:
             waveform = audio["waveform"]
@@ -500,6 +500,7 @@ class JoinAudioChannels(IO.ComfyNode):
 
 def match_audio_sample_rates(waveform_1, sample_rate_1, waveform_2, sample_rate_2):
     if sample_rate_1 != sample_rate_2:
+        import torchaudio
         if sample_rate_1 > sample_rate_2:
             waveform_2 = torchaudio.functional.resample(waveform_2, sample_rate_2, sample_rate_1)
             output_sample_rate = sample_rate_1
@@ -728,6 +729,7 @@ class AudioEqualizer3Band(IO.ComfyNode):
 
     @classmethod
     def execute(cls, audio, low_gain_dB, low_freq, mid_gain_dB, mid_freq, mid_q, high_gain_dB, high_freq) -> IO.NodeOutput:
+        import torchaudio
         waveform = audio["waveform"]
         sample_rate = audio["sample_rate"]
         eq_waveform = waveform.clone()

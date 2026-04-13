@@ -16,7 +16,6 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 import torch
-import torchvision
 from torch import nn
 
 import comfy.ops
@@ -27,6 +26,7 @@ ops = comfy.ops.disable_weight_init
 class EfficientNetEncoder(nn.Module):
     def __init__(self, c_latent=16):
         super().__init__()
+        import torchvision
         self.backbone = torchvision.models.efficientnet_v2_s().features.eval()
         self.mapper = nn.Sequential(
             ops.Conv2d(1280, c_latent, kernel_size=1, bias=False),

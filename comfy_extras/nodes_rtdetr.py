@@ -5,7 +5,6 @@ from comfy.ldm.rt_detr.rtdetr_v4 import COCO_CLASSES
 import comfy.model_management
 import comfy.utils
 from comfy_api.latest import ComfyExtension, io
-from torchvision.transforms import ToPILImage, ToTensor
 from PIL import ImageDraw, ImageFont
 
 
@@ -114,6 +113,7 @@ class DrawBBoxes(io.ComfyNode):
                 scores = torch.zeros((0,))
 
             pil_image = image[i].movedim(-1, 0)
+            from torchvision.transforms import ToPILImage, ToTensor
             img = ToPILImage()(pil_image)
             if detections:
                 img = cls.draw_detections(img, boxes, labels, scores)

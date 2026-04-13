@@ -1,5 +1,4 @@
 from comfy import sd1_clip
-from transformers import BertTokenizer
 from .spiece_tokenizer import SPieceTokenizer
 from .bert import BertModel
 import comfy.text_encoders.t5
@@ -15,7 +14,7 @@ class HyditBertModel(sd1_clip.SDClipModel):
 class HyditBertTokenizer(sd1_clip.SDTokenizer):
     def __init__(self, embedding_directory=None, tokenizer_data={}):
         tokenizer_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "hydit_clip_tokenizer")
-        super().__init__(tokenizer_path, pad_with_end=False, embedding_size=1024, embedding_key='chinese_roberta', tokenizer_class=BertTokenizer, pad_to_max_length=False, max_length=512, min_length=77, tokenizer_data=tokenizer_data)
+        super().__init__(tokenizer_path, pad_with_end=False, embedding_size=1024, embedding_key='chinese_roberta', tokenizer_class="BertTokenizer", pad_to_max_length=False, max_length=512, min_length=77, tokenizer_data=tokenizer_data)
 
 
 class MT5XLModel(sd1_clip.SDClipModel):

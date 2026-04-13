@@ -1,5 +1,4 @@
 import logging
-from spandrel import ModelLoader, ImageModelDescriptor
 from comfy import model_management
 import torch
 import comfy.utils
@@ -7,13 +6,7 @@ import folder_paths
 from typing_extensions import override
 from comfy_api.latest import ComfyExtension, io
 
-try:
-    from spandrel_extra_arches import EXTRA_REGISTRY
-    from spandrel import MAIN_REGISTRY
-    MAIN_REGISTRY.add(*EXTRA_REGISTRY)
-    logging.info("Successfully imported spandrel_extra_arches: support for non commercial upscale models.")
-except:
-    pass
+_spandrel_extra_arches_loaded = False
 
 class UpscaleModelLoader(io.ComfyNode):
     @classmethod
@@ -32,6 +25,18 @@ class UpscaleModelLoader(io.ComfyNode):
 
     @classmethod
     def execute(cls, model_name) -> io.NodeOutput:
+        from spandrel import ModelLoader, ImageModelDescriptor
+        global _spandrel_extra_arches_loaded
+        if not _spandrel_extra_arches_loaded:
+            _spandrel_extra_arches_loaded = True
+            try:
+                from spandrel import MAIN_REGISTRY
+                from spandrel_extra_arches import EXTRA_REGISTRY
+                MAIN_REGISTRY.add(*EXTRA_REGISTRY)
+                logging.info("Successfully imported spandrel_extra_arches: support for non commercial upscale models.")
+            except ImportError:
+                pass
+
         model_path = folder_paths.get_full_path_or_raise("upscale_models", model_name)
         sd = comfy.utils.load_torch_file(model_path, safe_load=True)
         if "module.layers.0.residual_group.blocks.0.norm1.weight" in sd:

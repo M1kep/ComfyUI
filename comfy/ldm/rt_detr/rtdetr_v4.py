@@ -4,7 +4,6 @@ from typing import List
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision
 import comfy.model_management
 from comfy.ldm.modules.attention import optimized_attention_for_device
 
@@ -711,6 +710,7 @@ class RTv4(nn.Module):
         return self.decoder(self.encoder(self.backbone(x)))
 
     def postprocess(self, outputs, orig_size: tuple = (640, 640)) -> List[dict]:
+        import torchvision
         logits = outputs['pred_logits']
         boxes  = torchvision.ops.box_convert(outputs['pred_boxes'], 'cxcywh', 'xyxy')
         boxes  = boxes * torch.tensor(orig_size, device=boxes.device, dtype=boxes.dtype).repeat(1, 2).unsqueeze(1)

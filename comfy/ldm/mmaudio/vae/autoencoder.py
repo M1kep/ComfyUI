@@ -6,13 +6,6 @@ import torch.nn as nn
 from .distributions import DiagonalGaussianDistribution
 from .vae import VAE_16k
 from .bigvgan import BigVGANVocoder
-import logging
-
-try:
-    import torchaudio
-except:
-    logging.warning("torchaudio missing, MMAudio VAE model will be broken")
-
 def dynamic_range_compression_torch(x, C=1, clip_val=1e-5, *, norm_fn):
     return norm_fn(torch.clamp(x, min=clip_val) * C)
 
@@ -142,6 +135,7 @@ class AudioAutoencoder(nn.Module):
 
     @torch.no_grad()
     def decode(self, z):
+        import torchaudio
         mel_decoded = self.vae.decode(z)
         audio = self.vocoder(mel_decoded)
 
@@ -150,6 +144,7 @@ class AudioAutoencoder(nn.Module):
 
     @torch.no_grad()
     def encode(self, audio):
+        import torchaudio
         audio = audio.mean(dim=1)
         audio = torchaudio.functional.resample(audio, 44100, 16000)
         dist = self.encode_audio(audio)
