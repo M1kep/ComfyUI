@@ -16,43 +16,10 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-import comfy.ldm.hunyuan3dv2_1
-import comfy.ldm.hunyuan3dv2_1.hunyuandit
 import torch
 import logging
-import comfy.ldm.lightricks.av_model
 import comfy.context_windows
-from comfy.ldm.modules.diffusionmodules.openaimodel import UNetModel, Timestep
-from comfy.ldm.cascade.stage_c import StageC
-from comfy.ldm.cascade.stage_b import StageB
-from comfy.ldm.modules.encoders.noise_aug_modules import CLIPEmbeddingNoiseAugmentation
-from comfy.ldm.modules.diffusionmodules.upscaling import ImageConcatWithNoiseAugmentation
-from comfy.ldm.modules.diffusionmodules.mmdit import OpenAISignatureMMDITWrapper
-import comfy.ldm.genmo.joint_model.asymm_models_joint
-import comfy.ldm.aura.mmdit
-import comfy.ldm.pixart.pixartms
-import comfy.ldm.hydit.models
-import comfy.ldm.audio.dit
-import comfy.ldm.audio.embedders
-import comfy.ldm.flux.model
-import comfy.ldm.lightricks.model
-import comfy.ldm.hunyuan_video.model
-import comfy.ldm.cosmos.model
-import comfy.ldm.cosmos.predict2
-import comfy.ldm.lumina.model
-import comfy.ldm.wan.model
-import comfy.ldm.wan.model_animate
-import comfy.ldm.hunyuan3d.model
-import comfy.ldm.hidream.model
-import comfy.ldm.chroma.model
-import comfy.ldm.chroma_radiance.model
-import comfy.ldm.ace.model
-import comfy.ldm.omnigen.omnigen2
-import comfy.ldm.qwen_image.model
-import comfy.ldm.kandinsky5.model
-import comfy.ldm.anima.model
-import comfy.ldm.ace.ace_step15
-import comfy.ldm.rt_detr.rtdetr_v4
+from comfy.utils import lazy_import as _lazy_import
 
 import comfy.model_management
 import comfy.patcher_extension
@@ -130,8 +97,11 @@ def convert_tensor(extra, dtype, device):
 
 
 class BaseModel(torch.nn.Module):
-    def __init__(self, model_config, model_type=ModelType.EPS, device=None, unet_model=UNetModel):
+    def __init__(self, model_config, model_type=ModelType.EPS, device=None, unet_model=None):
         super().__init__()
+        if unet_model is None:
+            from comfy.ldm.modules.diffusionmodules.openaimodel import UNetModel
+            unet_model = UNetModel
 
         unet_config = model_config.unet_config
         self.latent_format = model_config.latent_format
@@ -427,6 +397,7 @@ def unclip_adm(unclip_conditioning, device, noise_augmentor, noise_augment_merge
 class SD21UNCLIP(BaseModel):
     def __init__(self, model_config, noise_aug_config, model_type=ModelType.V_PREDICTION, device=None):
         super().__init__(model_config, model_type, device=device)
+        CLIPEmbeddingNoiseAugmentation = _lazy_import("comfy.ldm.modules.encoders.noise_aug_modules", "CLIPEmbeddingNoiseAugmentation")
         self.noise_augmentor = CLIPEmbeddingNoiseAugmentation(**noise_aug_config)
 
     def encode_adm(self, **kwargs):
@@ -446,6 +417,8 @@ def sdxl_pooled(args, noise_augmentor):
 class SDXLRefiner(BaseModel):
     def __init__(self, model_config, model_type=ModelType.EPS, device=None):
         super().__init__(model_config, model_type, device=device)
+        Timestep = _lazy_import("comfy.ldm.modules.diffusionmodules.openaimodel", "Timestep")
+        CLIPEmbeddingNoiseAugmentation = _lazy_import("comfy.ldm.modules.encoders.noise_aug_modules", "CLIPEmbeddingNoiseAugmentation")
         self.embedder = Timestep(256)
         self.noise_augmentor = CLIPEmbeddingNoiseAugmentation(**{"noise_schedule_config": {"timesteps": 1000, "beta_schedule": "squaredcos_cap_v2"}, "timestep_dim": 1280})
 
@@ -473,6 +446,8 @@ class SDXLRefiner(BaseModel):
 class SDXL(BaseModel):
     def __init__(self, model_config, model_type=ModelType.EPS, device=None):
         super().__init__(model_config, model_type, device=device)
+        Timestep = _lazy_import("comfy.ldm.modules.diffusionmodules.openaimodel", "Timestep")
+        CLIPEmbeddingNoiseAugmentation = _lazy_import("comfy.ldm.modules.encoders.noise_aug_modules", "CLIPEmbeddingNoiseAugmentation")
         self.embedder = Timestep(256)
         self.noise_augmentor = CLIPEmbeddingNoiseAugmentation(**{"noise_schedule_config": {"timesteps": 1000, "beta_schedule": "squaredcos_cap_v2"}, "timestep_dim": 1280})
 
@@ -499,6 +474,7 @@ class SDXL(BaseModel):
 class SVD_img2vid(BaseModel):
     def __init__(self, model_config, model_type=ModelType.V_PREDICTION_EDM, device=None):
         super().__init__(model_config, model_type, device=device)
+        Timestep = _lazy_import("comfy.ldm.modules.diffusionmodules.openaimodel", "Timestep")
         self.embedder = Timestep(256)
 
     def encode_adm(self, **kwargs):
@@ -556,6 +532,7 @@ class SV3D_u(SVD_img2vid):
 class SV3D_p(SVD_img2vid):
     def __init__(self, model_config, model_type=ModelType.V_PREDICTION_EDM, device=None):
         super().__init__(model_config, model_type, device=device)
+        Timestep = _lazy_import("comfy.ldm.modules.diffusionmodules.openaimodel", "Timestep")
         self.embedder_512 = Timestep(512)
 
     def encode_adm(self, **kwargs):
@@ -606,6 +583,7 @@ class Stable_Zero123(BaseModel):
 class SD_X4Upscaler(BaseModel):
     def __init__(self, model_config, model_type=ModelType.V_PREDICTION, device=None):
         super().__init__(model_config, model_type, device=device)
+        ImageConcatWithNoiseAugmentation = _lazy_import("comfy.ldm.modules.diffusionmodules.upscaling", "ImageConcatWithNoiseAugmentation")
         self.noise_augmentor = ImageConcatWithNoiseAugmentation(noise_schedule_config={"linear_start": 0.0001, "linear_end": 0.02}, max_noise_level=350)
 
     def extra_conds(self, **kwargs):
@@ -687,7 +665,7 @@ class Lotus(BaseModel):
 
 class StableCascade_C(BaseModel):
     def __init__(self, model_config, model_type=ModelType.STABLE_CASCADE, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=StageC)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.cascade.stage_c", "StageC"))
 
     def extra_conds(self, **kwargs):
         out = {}
@@ -715,7 +693,7 @@ class StableCascade_C(BaseModel):
 
 class StableCascade_B(BaseModel):
     def __init__(self, model_config, model_type=ModelType.STABLE_CASCADE, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=StageB)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.cascade.stage_b", "StageB"))
 
     def extra_conds(self, **kwargs):
         out = {}
@@ -735,7 +713,7 @@ class StableCascade_B(BaseModel):
 
 class SD3(BaseModel):
     def __init__(self, model_config, model_type=ModelType.FLOW, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=OpenAISignatureMMDITWrapper)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.modules.diffusionmodules.mmdit", "OpenAISignatureMMDITWrapper"))
 
     def encode_adm(self, **kwargs):
         return kwargs["pooled_output"]
@@ -750,7 +728,7 @@ class SD3(BaseModel):
 
 class AuraFlow(BaseModel):
     def __init__(self, model_config, model_type=ModelType.FLOW, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.aura.mmdit.MMDiT)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.aura.mmdit", "MMDiT"))
 
     def extra_conds(self, **kwargs):
         out = super().extra_conds(**kwargs)
@@ -762,9 +740,10 @@ class AuraFlow(BaseModel):
 
 class StableAudio1(BaseModel):
     def __init__(self, model_config, seconds_start_embedder_weights, seconds_total_embedder_weights, model_type=ModelType.V_PREDICTION_CONTINUOUS, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.audio.dit.AudioDiffusionTransformer)
-        self.seconds_start_embedder = comfy.ldm.audio.embedders.NumberConditioner(768, min_val=0, max_val=512)
-        self.seconds_total_embedder = comfy.ldm.audio.embedders.NumberConditioner(768, min_val=0, max_val=512)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.audio.dit", "AudioDiffusionTransformer"))
+        NumberConditioner = _lazy_import("comfy.ldm.audio.embedders", "NumberConditioner")
+        self.seconds_start_embedder = NumberConditioner(768, min_val=0, max_val=512)
+        self.seconds_total_embedder = NumberConditioner(768, min_val=0, max_val=512)
         self.seconds_start_embedder.load_state_dict(seconds_start_embedder_weights)
         self.seconds_total_embedder.load_state_dict(seconds_total_embedder_weights)
 
@@ -801,7 +780,7 @@ class StableAudio1(BaseModel):
 
 class HunyuanDiT(BaseModel):
     def __init__(self, model_config, model_type=ModelType.V_PREDICTION, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.hydit.models.HunYuanDiT)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.hydit.models", "HunYuanDiT"))
 
     def extra_conds(self, **kwargs):
         out = super().extra_conds(**kwargs)
@@ -831,7 +810,7 @@ class HunyuanDiT(BaseModel):
 
 class PixArt(BaseModel):
     def __init__(self, model_config, model_type=ModelType.EPS, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.pixart.pixartms.PixArtMS)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.pixart.pixartms", "PixArtMS"))
 
     def extra_conds(self, **kwargs):
         out = super().extra_conds(**kwargs)
@@ -849,7 +828,9 @@ class PixArt(BaseModel):
         return out
 
 class Flux(BaseModel):
-    def __init__(self, model_config, model_type=ModelType.FLUX, device=None, unet_model=comfy.ldm.flux.model.Flux):
+    def __init__(self, model_config, model_type=ModelType.FLUX, device=None, unet_model=None):
+        if unet_model is None:
+            unet_model = _lazy_import("comfy.ldm.flux.model", "Flux")
         super().__init__(model_config, model_type, device=device, unet_model=unet_model)
         self.memory_usage_factor_conds = ("ref_latents",)
 
@@ -966,7 +947,7 @@ class Flux2(Flux):
 
 class GenmoMochi(BaseModel):
     def __init__(self, model_config, model_type=ModelType.FLOW, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.genmo.joint_model.asymm_models_joint.AsymmDiTJoint)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.genmo.joint_model.asymm_models_joint", "AsymmDiTJoint"))
 
     def extra_conds(self, **kwargs):
         out = super().extra_conds(**kwargs)
@@ -981,7 +962,7 @@ class GenmoMochi(BaseModel):
 
 class LTXV(BaseModel):
     def __init__(self, model_config, model_type=ModelType.FLUX, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.lightricks.model.LTXVModel)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.lightricks.model", "LTXVModel"))
 
     def extra_conds(self, **kwargs):
         out = super().extra_conds(**kwargs)
@@ -1018,7 +999,7 @@ class LTXV(BaseModel):
 
 class LTXAV(BaseModel):
     def __init__(self, model_config, model_type=ModelType.FLUX, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.lightricks.av_model.LTXAVModel) #TODO
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.lightricks.av_model", "LTXAVModel")) #TODO
 
     def extra_conds(self, **kwargs):
         out = super().extra_conds(**kwargs)
@@ -1084,7 +1065,7 @@ class LTXAV(BaseModel):
 
 class HunyuanVideo(BaseModel):
     def __init__(self, model_config, model_type=ModelType.FLOW, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.hunyuan_video.model.HunyuanVideo)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.hunyuan_video.model", "HunyuanVideo"))
 
     def encode_adm(self, **kwargs):
         return kwargs["pooled_output"]
@@ -1133,7 +1114,7 @@ class HunyuanVideoSkyreelsI2V(HunyuanVideo):
 
 class CosmosVideo(BaseModel):
     def __init__(self, model_config, model_type=ModelType.EDM, image_to_video=False, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.cosmos.model.GeneralDIT)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.cosmos.model", "GeneralDIT"))
         self.image_to_video = image_to_video
         if self.image_to_video:
             self.concat_keys = ("mask_inverted",)
@@ -1160,7 +1141,7 @@ class CosmosVideo(BaseModel):
 
 class CosmosPredict2(BaseModel):
     def __init__(self, model_config, model_type=ModelType.FLOW_COSMOS, image_to_video=False, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.cosmos.predict2.MiniTrainDIT)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.cosmos.predict2", "MiniTrainDIT"))
         self.image_to_video = image_to_video
         if self.image_to_video:
             self.concat_keys = ("mask_inverted",)
@@ -1199,7 +1180,7 @@ class CosmosPredict2(BaseModel):
 
 class Anima(BaseModel):
     def __init__(self, model_config, model_type=ModelType.FLOW, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.anima.model.Anima)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.anima.model", "Anima"))
 
     def extra_conds(self, **kwargs):
         out = super().extra_conds(**kwargs)
@@ -1224,7 +1205,7 @@ class Anima(BaseModel):
 
 class Lumina2(BaseModel):
     def __init__(self, model_config, model_type=ModelType.FLOW, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.lumina.model.NextDiT)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.lumina.model", "NextDiT"))
         self.memory_usage_factor_conds = ("ref_latents",)
 
     def extra_conds(self, **kwargs):
@@ -1278,12 +1259,12 @@ class Lumina2(BaseModel):
 
 class ZImagePixelSpace(Lumina2):
     def __init__(self, model_config, model_type=ModelType.FLOW, device=None):
-        BaseModel.__init__(self, model_config, model_type, device=device, unet_model=comfy.ldm.lumina.model.NextDiTPixelSpace)
+        BaseModel.__init__(self, model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.lumina.model", "NextDiTPixelSpace"))
         self.memory_usage_factor_conds = ("ref_latents",)
 
 class WAN21(BaseModel):
     def __init__(self, model_config, model_type=ModelType.FLOW, image_to_video=False, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.wan.model.WanModel)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.wan.model", "WanModel"))
         self.image_to_video = image_to_video
 
     def concat_cond(self, **kwargs):
@@ -1356,7 +1337,7 @@ class WAN21(BaseModel):
 
 class WAN21_Vace(WAN21):
     def __init__(self, model_config, model_type=ModelType.FLOW, image_to_video=False, device=None):
-        super(WAN21, self).__init__(model_config, model_type, device=device, unet_model=comfy.ldm.wan.model.VaceWanModel)
+        super(WAN21, self).__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.wan.model", "VaceWanModel"))
         self.image_to_video = image_to_video
 
     def extra_conds(self, **kwargs):
@@ -1395,7 +1376,7 @@ class WAN21_Vace(WAN21):
 
 class WAN21_Camera(WAN21):
     def __init__(self, model_config, model_type=ModelType.FLOW, image_to_video=False, device=None):
-        super(WAN21, self).__init__(model_config, model_type, device=device, unet_model=comfy.ldm.wan.model.CameraWanModel)
+        super(WAN21, self).__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.wan.model", "CameraWanModel"))
         self.image_to_video = image_to_video
 
     def extra_conds(self, **kwargs):
@@ -1407,7 +1388,7 @@ class WAN21_Camera(WAN21):
 
 class WAN21_HuMo(WAN21):
     def __init__(self, model_config, model_type=ModelType.FLOW, image_to_video=False, device=None):
-        super(WAN21, self).__init__(model_config, model_type, device=device, unet_model=comfy.ldm.wan.model.HumoWanModel)
+        super(WAN21, self).__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.wan.model", "HumoWanModel"))
         self.image_to_video = image_to_video
 
     def extra_conds(self, **kwargs):
@@ -1452,7 +1433,7 @@ class WAN21_HuMo(WAN21):
 
 class WAN22_Animate(WAN21):
     def __init__(self, model_config, model_type=ModelType.FLOW, image_to_video=False, device=None):
-        super(WAN21, self).__init__(model_config, model_type, device=device, unet_model=comfy.ldm.wan.model_animate.AnimateWanModel)
+        super(WAN21, self).__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.wan.model_animate", "AnimateWanModel"))
         self.image_to_video = image_to_video
 
     def extra_conds(self, **kwargs):
@@ -1476,7 +1457,7 @@ class WAN22_Animate(WAN21):
 
 class WAN22_S2V(WAN21):
     def __init__(self, model_config, model_type=ModelType.FLOW, device=None):
-        super(WAN21, self).__init__(model_config, model_type, device=device, unet_model=comfy.ldm.wan.model.WanModel_S2V)
+        super(WAN21, self).__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.wan.model", "WanModel_S2V"))
         self.memory_usage_factor_conds = ("reference_latent", "reference_motion")
         self.memory_usage_shape_process = {"reference_motion": lambda shape: [shape[0], shape[1], 1.5, shape[-2], shape[-1]]}
 
@@ -1517,7 +1498,7 @@ class WAN22_S2V(WAN21):
 
 class WAN22(WAN21):
     def __init__(self, model_config, model_type=ModelType.FLOW, image_to_video=False, device=None):
-        super(WAN21, self).__init__(model_config, model_type, device=device, unet_model=comfy.ldm.wan.model.WanModel)
+        super(WAN21, self).__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.wan.model", "WanModel"))
         self.image_to_video = image_to_video
 
     def extra_conds(self, **kwargs):
@@ -1539,12 +1520,12 @@ class WAN22(WAN21):
 class WAN21_FlowRVS(WAN21):
     def __init__(self, model_config, model_type=ModelType.IMG_TO_IMG_FLOW, image_to_video=False, device=None):
         model_config.unet_config["model_type"] = "t2v"
-        super(WAN21, self).__init__(model_config, model_type, device=device, unet_model=comfy.ldm.wan.model.WanModel)
+        super(WAN21, self).__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.wan.model", "WanModel"))
         self.image_to_video = image_to_video
 
 class WAN21_SCAIL(WAN21):
     def __init__(self, model_config, model_type=ModelType.FLOW, image_to_video=False, device=None):
-        super(WAN21, self).__init__(model_config, model_type, device=device, unet_model=comfy.ldm.wan.model.SCAILWanModel)
+        super(WAN21, self).__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.wan.model", "SCAILWanModel"))
         self.memory_usage_factor_conds = ("reference_latent", "pose_latents")
         self.memory_usage_shape_process = {"pose_latents": lambda shape: [shape[0], shape[1], 1.5, shape[-2], shape[-1]]}
         self.image_to_video = image_to_video
@@ -1582,7 +1563,7 @@ class WAN21_SCAIL(WAN21):
 
 class Hunyuan3Dv2(BaseModel):
     def __init__(self, model_config, model_type=ModelType.FLOW, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.hunyuan3d.model.Hunyuan3Dv2)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.hunyuan3d.model", "Hunyuan3Dv2"))
 
     def extra_conds(self, **kwargs):
         out = super().extra_conds(**kwargs)
@@ -1597,7 +1578,7 @@ class Hunyuan3Dv2(BaseModel):
 
 class Hunyuan3Dv2_1(BaseModel):
     def __init__(self, model_config, model_type=ModelType.FLOW, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.hunyuan3dv2_1.hunyuandit.HunYuanDiTPlain)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.hunyuan3dv2_1.hunyuandit", "HunYuanDiTPlain"))
 
     def extra_conds(self, **kwargs):
         out = super().extra_conds(**kwargs)
@@ -1612,7 +1593,7 @@ class Hunyuan3Dv2_1(BaseModel):
 
 class HiDream(BaseModel):
     def __init__(self, model_config, model_type=ModelType.FLOW, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.hidream.model.HiDreamImageTransformer2DModel)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.hidream.model", "HiDreamImageTransformer2DModel"))
 
     def encode_adm(self, **kwargs):
         return kwargs["pooled_output"]
@@ -1631,7 +1612,9 @@ class HiDream(BaseModel):
         return out
 
 class Chroma(Flux):
-    def __init__(self, model_config, model_type=ModelType.FLUX, device=None, unet_model=comfy.ldm.chroma.model.Chroma):
+    def __init__(self, model_config, model_type=ModelType.FLUX, device=None, unet_model=None):
+        if unet_model is None:
+            unet_model = _lazy_import("comfy.ldm.chroma.model", "Chroma")
         super().__init__(model_config, model_type, device=device, unet_model=unet_model)
 
     def extra_conds(self, **kwargs):
@@ -1644,11 +1627,11 @@ class Chroma(Flux):
 
 class ChromaRadiance(Chroma):
     def __init__(self, model_config, model_type=ModelType.FLUX, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.chroma_radiance.model.ChromaRadiance)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.chroma_radiance.model", "ChromaRadiance"))
 
 class ACEStep(BaseModel):
     def __init__(self, model_config, model_type=ModelType.FLOW, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.ace.model.ACEStepTransformer2DModel)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.ace.model", "ACEStepTransformer2DModel"))
 
     def extra_conds(self, **kwargs):
         out = super().extra_conds(**kwargs)
@@ -1667,7 +1650,7 @@ class ACEStep(BaseModel):
 
 class ACEStep15(BaseModel):
     def __init__(self, model_config, model_type=ModelType.FLOW, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.ace.ace_step15.AceStepConditionGenerationModel)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.ace.ace_step15", "AceStepConditionGenerationModel"))
 
     def extra_conds(self, **kwargs):
         out = super().extra_conds(**kwargs)
@@ -1684,9 +1667,11 @@ class ACEStep15(BaseModel):
         if cross_attn is not None:
             out['lyric_embed'] = comfy.conds.CONDRegular(conditioning_lyrics)
 
+        get_silence_latent = _lazy_import("comfy.ldm.ace.ace_step15", "get_silence_latent")
+
         refer_audio = kwargs.get("reference_audio_timbre_latents", None)
         if refer_audio is None or len(refer_audio) == 0:
-            refer_audio = comfy.ldm.ace.ace_step15.get_silence_latent(noise.shape[2], device)
+            refer_audio = get_silence_latent(noise.shape[2], device)
             pass_audio_codes = True
         else:
             refer_audio = refer_audio[-1][:, :, :noise.shape[2]]
@@ -1702,7 +1687,7 @@ class ACEStep15(BaseModel):
                 out['is_covers'] = comfy.conds.CONDConstant(False)
 
         if refer_audio.shape[2] < noise.shape[2]:
-            pad = comfy.ldm.ace.ace_step15.get_silence_latent(noise.shape[2], device)
+            pad = get_silence_latent(noise.shape[2], device)
             refer_audio = torch.cat([refer_audio.to(pad), pad[:, :, refer_audio.shape[2]:]], dim=2)
 
         out['refer_audio'] = comfy.conds.CONDRegular(refer_audio)
@@ -1710,7 +1695,7 @@ class ACEStep15(BaseModel):
 
 class Omnigen2(BaseModel):
     def __init__(self, model_config, model_type=ModelType.FLOW, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.omnigen.omnigen2.OmniGen2Transformer2DModel)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.omnigen.omnigen2", "OmniGen2Transformer2DModel"))
         self.memory_usage_factor_conds = ("ref_latents",)
 
     def extra_conds(self, **kwargs):
@@ -1740,7 +1725,7 @@ class Omnigen2(BaseModel):
 
 class QwenImage(BaseModel):
     def __init__(self, model_config, model_type=ModelType.FLUX, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.qwen_image.model.QwenImageTransformer2DModel)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.qwen_image.model", "QwenImageTransformer2DModel"))
         self.memory_usage_factor_conds = ("ref_latents",)
 
     def extra_conds(self, **kwargs):
@@ -1772,7 +1757,7 @@ class QwenImage(BaseModel):
 
 class HunyuanImage21(BaseModel):
     def __init__(self, model_config, model_type=ModelType.FLOW, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.hunyuan_video.model.HunyuanVideo)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.hunyuan_video.model", "HunyuanVideo"))
 
     def extra_conds(self, **kwargs):
         out = super().extra_conds(**kwargs)
@@ -1915,7 +1900,7 @@ class HunyuanVideo15_SR_Distilled(HunyuanVideo15):
 
 class Kandinsky5(BaseModel):
     def __init__(self, model_config, model_type=ModelType.FLOW, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.kandinsky5.model.Kandinsky5)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.kandinsky5.model", "Kandinsky5"))
 
     def encode_adm(self, **kwargs):
         return kwargs["pooled_output"]
@@ -1961,4 +1946,4 @@ class Kandinsky5Image(Kandinsky5):
 
 class RT_DETR_v4(BaseModel):
     def __init__(self, model_config, model_type=ModelType.FLOW, device=None):
-        super().__init__(model_config, model_type, device=device, unet_model=comfy.ldm.rt_detr.rtdetr_v4.RTv4)
+        super().__init__(model_config, model_type, device=device, unet_model=_lazy_import("comfy.ldm.rt_detr.rtdetr_v4", "RTv4"))

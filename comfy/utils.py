@@ -17,6 +17,7 @@
 """
 
 
+import importlib
 import torch
 import math
 import struct
@@ -39,6 +40,11 @@ import warnings
 
 MMAP_TORCH_FILES = args.mmap_torch_files
 DISABLE_MMAP = args.disable_mmap
+
+
+def lazy_import(module_path, attr_name):
+    mod = importlib.import_module(module_path)
+    return getattr(mod, attr_name)
 
 
 if True:  # ckpt/pt file whitelist for safe loading of old sd files

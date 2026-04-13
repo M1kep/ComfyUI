@@ -5,20 +5,7 @@ from enum import Enum
 import logging
 
 from comfy import model_management
-from comfy.utils import ProgressBar
-from .ldm.models.autoencoder import AutoencoderKL, AutoencodingEngine
-from .ldm.cascade.stage_a import StageA
-from .ldm.cascade.stage_c_coder import StageC_coder
-from .ldm.audio.autoencoder import AudioOobleckVAE
-import comfy.ldm.genmo.vae.model
-import comfy.ldm.lightricks.vae.causal_video_autoencoder
-import comfy.ldm.cosmos.vae
-import comfy.ldm.wan.vae
-import comfy.ldm.wan.vae2_2
-import comfy.ldm.hunyuan3d.vae
-import comfy.ldm.ace.vae.music_dcae_pipeline
-import comfy.ldm.hunyuan_video.vae
-import comfy.ldm.mmaudio.vae.autoencoder
+from comfy.utils import ProgressBar, lazy_import as _lazy_import
 import comfy.pixel_space_convert
 import comfy.weight_adapter
 import yaml
@@ -34,45 +21,12 @@ from . import model_detection
 
 from . import sd1_clip
 from . import sdxl_clip
-import comfy.text_encoders.sd2_clip
-import comfy.text_encoders.sd3_clip
-import comfy.text_encoders.sa_t5
-import comfy.text_encoders.aura_t5
-import comfy.text_encoders.pixart_t5
-import comfy.text_encoders.hydit
-import comfy.text_encoders.flux
-import comfy.text_encoders.long_clipl
-import comfy.text_encoders.genmo
-import comfy.text_encoders.lt
-import comfy.text_encoders.hunyuan_video
-import comfy.text_encoders.cosmos
-import comfy.text_encoders.lumina2
-import comfy.text_encoders.wan
-import comfy.text_encoders.hidream
-import comfy.text_encoders.ace
-import comfy.text_encoders.omnigen2
-import comfy.text_encoders.qwen_image
-import comfy.text_encoders.hunyuan_image
-import comfy.text_encoders.z_image
-import comfy.text_encoders.ovis
-import comfy.text_encoders.kandinsky5
-import comfy.text_encoders.jina_clip_2
-import comfy.text_encoders.newbie
-import comfy.text_encoders.anima
-import comfy.text_encoders.ace15
-import comfy.text_encoders.longcat_image
-import comfy.text_encoders.qwen35
 
 import comfy.model_patcher
 import comfy.lora
 import comfy.lora_convert
 import comfy.hooks
-import comfy.t2i_adapter.adapter
-import comfy.taesd.taesd
-import comfy.taesd.taehv
 import comfy.latent_formats
-
-import comfy.ldm.flux.redux
 
 def load_lora_for_models(model, clip, lora, strength_model, strength_clip):
     key_map = {}
@@ -472,14 +426,14 @@ class VAE:
                 decoder_config = encoder_config.copy()
                 decoder_config["video_kernel_size"] = [3, 1, 1]
                 decoder_config["alpha"] = 0.0
-                self.first_stage_model = AutoencodingEngine(regularizer_config={'target': "comfy.ldm.models.autoencoder.DiagonalGaussianRegularizer"},
+                self.first_stage_model = _lazy_import("comfy.ldm.models.autoencoder", "AutoencodingEngine")(regularizer_config={'target': "comfy.ldm.models.autoencoder.DiagonalGaussianRegularizer"},
                                                             encoder_config={'target': "comfy.ldm.modules.diffusionmodules.model.Encoder", 'params': encoder_config},
                                                             decoder_config={'target': "comfy.ldm.modules.temporal_ae.VideoDecoder", 'params': decoder_config})
             elif "taesd_decoder.1.weight" in sd:
                 self.latent_channels = sd["taesd_decoder.1.weight"].shape[1]
-                self.first_stage_model = comfy.taesd.taesd.TAESD(latent_channels=self.latent_channels)
+                self.first_stage_model = _lazy_import("comfy.taesd.taesd", "TAESD")(latent_channels=self.latent_channels)
             elif "vquantizer.codebook.weight" in sd: #VQGan: stage a of stable cascade
-                self.first_stage_model = StageA()
+                self.first_stage_model = _lazy_import("comfy.ldm.cascade.stage_a", "StageA")()
                 self.downscale_ratio = 4
                 self.upscale_ratio = 4
                 #TODO
@@ -488,7 +442,7 @@ class VAE:
                 self.process_input = lambda image: image
                 self.process_output = lambda image: image
             elif "backbone.1.0.block.0.1.num_batches_tracked" in sd: #effnet: encoder for stage c latent of stable cascade
-                self.first_stage_model = StageC_coder()
+                self.first_stage_model = _lazy_import("comfy.ldm.cascade.stage_c_coder", "StageC_coder")()
                 self.downscale_ratio = 32
                 self.latent_channels = 16
                 new_sd = {}
@@ -496,14 +450,14 @@ class VAE:
                     new_sd["encoder.{}".format(k)] = sd[k]
                 sd = new_sd
             elif "blocks.11.num_batches_tracked" in sd: #previewer: decoder for stage c latent of stable cascade
-                self.first_stage_model = StageC_coder()
+                self.first_stage_model = _lazy_import("comfy.ldm.cascade.stage_c_coder", "StageC_coder")()
                 self.latent_channels = 16
                 new_sd = {}
                 for k in sd:
                     new_sd["previewer.{}".format(k)] = sd[k]
                 sd = new_sd
             elif "encoder.backbone.1.0.block.0.1.num_batches_tracked" in sd: #combined effnet and previewer for stable cascade
-                self.first_stage_model = StageC_coder()
+                self.first_stage_model = _lazy_import("comfy.ldm.cascade.stage_c_coder", "StageC_coder")()
                 self.downscale_ratio = 32
                 self.latent_channels = 16
             elif "decoder.conv_in.weight" in sd:
@@ -513,7 +467,7 @@ class VAE:
                     self.downscale_ratio = 32
                     self.upscale_ratio = 32
                     self.working_dtypes = [torch.float16, torch.bfloat16, torch.float32]
-                    self.first_stage_model = AutoencodingEngine(regularizer_config={'target': "comfy.ldm.models.autoencoder.DiagonalGaussianRegularizer"},
+                    self.first_stage_model = _lazy_import("comfy.ldm.models.autoencoder", "AutoencodingEngine")(regularizer_config={'target': "comfy.ldm.models.autoencoder.DiagonalGaussianRegularizer"},
                                                                 encoder_config={'target': "comfy.ldm.hunyuan_video.vae.Encoder", 'params': ddconfig},
                                                                 decoder_config={'target': "comfy.ldm.hunyuan_video.vae.Decoder", 'params': ddconfig})
 
@@ -529,7 +483,7 @@ class VAE:
                     self.downscale_index_formula = (4, 16, 16)
                     self.latent_dim = 3
                     self.not_video = True
-                    self.first_stage_model = AutoencodingEngine(regularizer_config={'target': "comfy.ldm.models.autoencoder.DiagonalGaussianRegularizer"},
+                    self.first_stage_model = _lazy_import("comfy.ldm.models.autoencoder", "AutoencodingEngine")(regularizer_config={'target': "comfy.ldm.models.autoencoder.DiagonalGaussianRegularizer"},
                                                                 encoder_config={'target': "comfy.ldm.hunyuan_video.vae_refiner.Encoder", 'params': ddconfig},
                                                                 decoder_config={'target': "comfy.ldm.hunyuan_video.vae_refiner.Decoder", 'params': ddconfig})
 
@@ -557,9 +511,9 @@ class VAE:
                         self.memory_used_decode = lambda shape, dtype: old_memory_used_decode(shape, dtype) *  4.0
 
                     if 'post_quant_conv.weight' in sd:
-                        self.first_stage_model = AutoencoderKL(ddconfig=ddconfig, embed_dim=sd['post_quant_conv.weight'].shape[1])
+                        self.first_stage_model = _lazy_import("comfy.ldm.models.autoencoder", "AutoencoderKL")(ddconfig=ddconfig, embed_dim=sd['post_quant_conv.weight'].shape[1])
                     else:
-                        self.first_stage_model = AutoencodingEngine(regularizer_config={'target': "comfy.ldm.models.autoencoder.DiagonalGaussianRegularizer"},
+                        self.first_stage_model = _lazy_import("comfy.ldm.models.autoencoder", "AutoencodingEngine")(regularizer_config={'target': "comfy.ldm.models.autoencoder.DiagonalGaussianRegularizer"},
                                                                     encoder_config={'target': "comfy.ldm.modules.diffusionmodules.model.Encoder", 'params': ddconfig},
                                                                     decoder_config={'target': "comfy.ldm.modules.diffusionmodules.model.Decoder", 'params': ddconfig})
             elif "decoder.layers.1.layers.0.beta" in sd:
@@ -578,7 +532,7 @@ class VAE:
                         self.upscale_ratio = 1920
                         self.downscale_ratio = 1920
 
-                self.first_stage_model = AudioOobleckVAE(**config)
+                self.first_stage_model = _lazy_import("comfy.ldm.audio.autoencoder", "AudioOobleckVAE")(**config)
                 self.memory_used_encode = lambda shape, dtype: (1000 * shape[2]) * model_management.dtype_size(dtype)
                 self.memory_used_decode = lambda shape, dtype: (1000 * shape[2] * 2048) * model_management.dtype_size(dtype)
                 self.latent_channels = 64
@@ -594,7 +548,7 @@ class VAE:
                     sd = comfy.utils.state_dict_prefix_replace(sd, {"": "decoder."})
                 if "layers.4.layers.1.attn_block.attn.qkv.weight" in sd:
                     sd = comfy.utils.state_dict_prefix_replace(sd, {"": "encoder."})
-                self.first_stage_model = comfy.ldm.genmo.vae.model.VideoVAE()
+                self.first_stage_model = _lazy_import("comfy.ldm.genmo.vae.model", "VideoVAE")()
                 self.latent_channels = 12
                 self.latent_dim = 3
                 self.memory_used_decode = lambda shape, dtype: (1000 * shape[2] * shape[3] * shape[4] * (6 * 8 * 8)) * model_management.dtype_size(dtype)
@@ -616,7 +570,7 @@ class VAE:
                 vae_config = None
                 if metadata is not None and "config" in metadata:
                     vae_config = json.loads(metadata["config"]).get("vae", None)
-                self.first_stage_model = comfy.ldm.lightricks.vae.causal_video_autoencoder.VideoVAE(version=version, config=vae_config)
+                self.first_stage_model = _lazy_import("comfy.ldm.lightricks.vae.causal_video_autoencoder", "VideoVAE")(version=version, config=vae_config)
                 self.latent_channels = 128
                 self.latent_dim = 3
                 self.memory_used_decode = lambda shape, dtype: (1200 * shape[2] * shape[3] * shape[4] * (8 * 8 * 8)) * model_management.dtype_size(dtype)
@@ -637,7 +591,7 @@ class VAE:
                 self.latent_dim = 3
                 self.not_video = False
                 self.working_dtypes = [torch.float16, torch.bfloat16, torch.float32]
-                self.first_stage_model = AutoencodingEngine(regularizer_config={'target': "comfy.ldm.models.autoencoder.EmptyRegularizer"},
+                self.first_stage_model = _lazy_import("comfy.ldm.models.autoencoder", "AutoencodingEngine")(regularizer_config={'target': "comfy.ldm.models.autoencoder.EmptyRegularizer"},
                                                             encoder_config={'target': "comfy.ldm.hunyuan_video.vae_refiner.Encoder", 'params': ddconfig},
                                                             decoder_config={'target': "comfy.ldm.hunyuan_video.vae_refiner.Decoder", 'params': ddconfig})
 
@@ -653,7 +607,7 @@ class VAE:
                 self.downscale_index_formula = (4, 8, 8)
                 self.latent_dim = 3
                 self.latent_channels = ddconfig['z_channels'] = sd["decoder.conv_in.conv.weight"].shape[1]
-                self.first_stage_model = AutoencoderKL(ddconfig=ddconfig, embed_dim=sd['post_quant_conv.weight'].shape[1])
+                self.first_stage_model = _lazy_import("comfy.ldm.models.autoencoder", "AutoencoderKL")(ddconfig=ddconfig, embed_dim=sd['post_quant_conv.weight'].shape[1])
                 #This is likely to significantly over-estimate with single image or low frame counts as the
                 #implementation is able to completely skip caching. Rework if used as an image only VAE
                 self.memory_used_decode = lambda shape, dtype: (2800 * min(8, ((shape[2] - 1) * 4) + 1) * shape[3] * shape[4] * (8 * 8)) * model_management.dtype_size(dtype)
@@ -667,7 +621,7 @@ class VAE:
                 self.latent_dim = 3
                 self.latent_channels = 16
                 ddconfig = {'z_channels': 16, 'latent_channels': self.latent_channels, 'z_factor': 1, 'resolution': 1024, 'in_channels': 3, 'out_channels': 3, 'channels': 128, 'channels_mult': [2, 4, 4], 'num_res_blocks': 2, 'attn_resolutions': [32], 'dropout': 0.0, 'patch_size': 4, 'num_groups': 1, 'temporal_compression': 8, 'spacial_compression': 8}
-                self.first_stage_model = comfy.ldm.cosmos.vae.CausalContinuousVideoTokenizer(**ddconfig)
+                self.first_stage_model = _lazy_import("comfy.ldm.cosmos.vae", "CausalContinuousVideoTokenizer")(**ddconfig)
                 #TODO: these values are a bit off because this is not a standard VAE
                 self.memory_used_decode = lambda shape, dtype: (50 * shape[2] * shape[3] * shape[4] * (8 * 8 * 8)) * model_management.dtype_size(dtype)
                 self.memory_used_encode = lambda shape, dtype: (50 * (round((shape[2] + 7) / 8) * 8) * shape[3] * shape[4]) * model_management.dtype_size(dtype)
@@ -681,7 +635,7 @@ class VAE:
                     self.latent_dim = 3
                     self.latent_channels = 48
                     ddconfig = {"dim": 160, "z_dim": self.latent_channels, "dim_mult": [1, 2, 4, 4], "num_res_blocks": 2, "attn_scales": [], "temperal_downsample": [False, True, True], "dropout": 0.0}
-                    self.first_stage_model = comfy.ldm.wan.vae2_2.WanVAE(**ddconfig)
+                    self.first_stage_model = _lazy_import("comfy.ldm.wan.vae2_2", "WanVAE")(**ddconfig)
                     self.working_dtypes = [torch.bfloat16, torch.float16, torch.float32]
                     self.memory_used_encode = lambda shape, dtype: 3300 * shape[3] * shape[4] * model_management.dtype_size(dtype)
                     self.memory_used_decode = lambda shape, dtype: 8000 * shape[3] * shape[4] * (16 * 16) * model_management.dtype_size(dtype)
@@ -697,7 +651,7 @@ class VAE:
                     self.conv_out_channels = sd["decoder.head.2.weight"].shape[0]
                     self.pad_channel_value = 1.0
                     ddconfig = {"dim": dim, "z_dim": self.latent_channels, "dim_mult": [1, 2, 4, 4], "num_res_blocks": 2, "attn_scales": [], "temperal_downsample": [False, True, True], "image_channels": self.output_channels, "conv_out_channels": self.conv_out_channels, "dropout": 0.0}
-                    self.first_stage_model = comfy.ldm.wan.vae.WanVAE(**ddconfig)
+                    self.first_stage_model = _lazy_import("comfy.ldm.wan.vae", "WanVAE")(**ddconfig)
                     self.working_dtypes = [torch.bfloat16, torch.float16, torch.float32]
                     self.memory_used_encode = lambda shape, dtype: (1500 if shape[2]<=4 else 6000) * shape[3] * shape[4] * model_management.dtype_size(dtype)
                     self.memory_used_decode = lambda shape, dtype: (2200 if shape[2]<=4 else 7000) * shape[3] * shape[4] * (8*8) * model_management.dtype_size(dtype)
@@ -722,12 +676,12 @@ class VAE:
                 self.memory_used_decode = lambda shape, dtype, num_layers = 16, kv_cache_multiplier = 2: \
                     estimate_memory(shape, dtype, num_layers, kv_cache_multiplier)
 
-                self.first_stage_model = comfy.ldm.hunyuan3d.vae.ShapeVAE()
+                self.first_stage_model = _lazy_import("comfy.ldm.hunyuan3d.vae", "ShapeVAE")()
                 self.working_dtypes = [torch.float16, torch.bfloat16, torch.float32]
 
 
             elif "vocoder.backbone.channel_layers.0.0.bias" in sd: #Ace Step Audio
-                self.first_stage_model = comfy.ldm.ace.vae.music_dcae_pipeline.MusicDCAE(source_sample_rate=44100)
+                self.first_stage_model = _lazy_import("comfy.ldm.ace.vae.music_dcae_pipeline", "MusicDCAE")(source_sample_rate=44100)
                 self.memory_used_encode = lambda shape, dtype: (shape[2] * 330) * model_management.dtype_size(dtype)
                 self.memory_used_decode = lambda shape, dtype: (shape[2] * shape[3] * 87000) * model_management.dtype_size(dtype)
                 self.latent_channels = 8
@@ -757,7 +711,7 @@ class VAE:
                 else:
                     mode = '44k'
 
-                self.first_stage_model = comfy.ldm.mmaudio.vae.autoencoder.AudioAutoencoder(mode=mode)
+                self.first_stage_model = _lazy_import("comfy.ldm.mmaudio.vae.autoencoder", "AudioAutoencoder")(mode=mode)
                 self.memory_used_encode = lambda shape, dtype: (30 * shape[2]) * model_management.dtype_size(dtype)
                 self.memory_used_decode = lambda shape, dtype: (90 * shape[2] * 1411.2) * model_management.dtype_size(dtype)
                 self.latent_channels = 20
@@ -777,19 +731,19 @@ class VAE:
                 self.downscale_ratio = (lambda a: max(0, math.floor((a + 3) / 4)), 16, 16)
                 self.downscale_index_formula = (4, 16, 16)
                 if self.latent_channels in [48, 128]: # Wan 2.2 and LTX2
-                    self.first_stage_model = comfy.taesd.taehv.TAEHV(latent_channels=self.latent_channels, latent_format=None) # taehv doesn't need scaling
+                    self.first_stage_model = _lazy_import("comfy.taesd.taehv", "TAEHV")(latent_channels=self.latent_channels, latent_format=None) # taehv doesn't need scaling
                     self.process_input = self.process_output = lambda image: image
                     self.process_output = lambda image: image
                     self.memory_used_decode = lambda shape, dtype: (1800 * (max(1, (shape[-3] ** 0.7 * 0.1)) * shape[-2] * shape[-1] * 16 * 16) * model_management.dtype_size(dtype))
                 elif self.latent_channels == 32 and sd["decoder.22.bias"].shape[0] == 12: # lighttae_hv15
-                    self.first_stage_model = comfy.taesd.taehv.TAEHV(latent_channels=self.latent_channels, latent_format=comfy.latent_formats.HunyuanVideo15)
+                    self.first_stage_model = _lazy_import("comfy.taesd.taehv", "TAEHV")(latent_channels=self.latent_channels, latent_format=comfy.latent_formats.HunyuanVideo15)
                     self.memory_used_decode = lambda shape, dtype: (1200 * (max(1, (shape[-3] ** 0.7 * 0.05)) * shape[-2] * shape[-1] * 32 * 32) * model_management.dtype_size(dtype))
                 else:
                     if sd["decoder.1.weight"].dtype == torch.float16: # taehv currently only available in float16, so assume it's not lighttaew2_1 as otherwise state dicts are identical
                         latent_format=comfy.latent_formats.HunyuanVideo
                     else:
                         latent_format=None # lighttaew2_1 doesn't need scaling
-                    self.first_stage_model = comfy.taesd.taehv.TAEHV(latent_channels=self.latent_channels, latent_format=latent_format)
+                    self.first_stage_model = _lazy_import("comfy.taesd.taehv", "TAEHV")(latent_channels=self.latent_channels, latent_format=latent_format)
                     self.process_input = self.process_output = lambda image: image
                     self.upscale_ratio = (lambda a: max(0, a * 4 - 3), 8, 8)
                     self.upscale_index_formula = (4, 8, 8)
@@ -802,7 +756,7 @@ class VAE:
                 self.first_stage_model = None
                 return
         else:
-            self.first_stage_model = AutoencoderKL(**(config['params']))
+            self.first_stage_model = _lazy_import("comfy.ldm.models.autoencoder", "AutoencoderKL")(**(config['params']))
         self.first_stage_model = self.first_stage_model.eval()
 
         if device is None:
@@ -1146,9 +1100,9 @@ def load_style_model(ckpt_path):
     model_data = comfy.utils.load_torch_file(ckpt_path, safe_load=True)
     keys = model_data.keys()
     if "style_embedding" in keys:
-        model = comfy.t2i_adapter.adapter.StyleAdapter(width=1024, context_dim=768, num_head=8, n_layes=3, num_token=8)
+        model = _lazy_import("comfy.t2i_adapter.adapter", "StyleAdapter")(width=1024, context_dim=768, num_head=8, n_layes=3, num_token=8)
     elif "redux_down.weight" in keys:
-        model = comfy.ldm.flux.redux.ReduxImageEncoder()
+        model = _lazy_import("comfy.ldm.flux.redux", "ReduxImageEncoder")()
     else:
         raise Exception("invalid style model {}".format(ckpt_path))
     model.load_state_dict(model_data)
@@ -1305,7 +1259,7 @@ def t5xxl_detect(clip_data):
 
     for sd in clip_data:
         if weight_name in sd or weight_name_old in sd:
-            return comfy.text_encoders.sd3_clip.t5_xxl_detect(sd)
+            return _lazy_import("comfy.text_encoders.sd3_clip", "t5_xxl_detect")(sd)
 
     return {}
 
@@ -1315,7 +1269,7 @@ def llama_detect(clip_data):
     for sd in clip_data:
         for weight_name in weight_names:
             if weight_name in sd:
-                return comfy.text_encoders.hunyuan_video.llama_detect(sd)
+                return _lazy_import("comfy.text_encoders.hunyuan_video", "llama_detect")(sd)
 
     return {}
 
@@ -1344,138 +1298,138 @@ def load_text_encoder_state_dicts(state_dicts=[], embedding_directory=None, clip
                 clip_target.clip = sdxl_clip.StableCascadeClipModel
                 clip_target.tokenizer = sdxl_clip.StableCascadeTokenizer
             elif clip_type == CLIPType.SD3:
-                clip_target.clip = comfy.text_encoders.sd3_clip.sd3_clip(clip_l=False, clip_g=True, t5=False)
-                clip_target.tokenizer = comfy.text_encoders.sd3_clip.SD3Tokenizer
+                clip_target.clip = _lazy_import("comfy.text_encoders.sd3_clip", "sd3_clip")(clip_l=False, clip_g=True, t5=False)
+                clip_target.tokenizer = _lazy_import("comfy.text_encoders.sd3_clip", "SD3Tokenizer")
             elif clip_type == CLIPType.HIDREAM:
-                clip_target.clip = comfy.text_encoders.hidream.hidream_clip(clip_l=False, clip_g=True, t5=False, llama=False, dtype_t5=None, dtype_llama=None)
-                clip_target.tokenizer = comfy.text_encoders.hidream.HiDreamTokenizer
+                clip_target.clip = _lazy_import("comfy.text_encoders.hidream", "hidream_clip")(clip_l=False, clip_g=True, t5=False, llama=False, dtype_t5=None, dtype_llama=None)
+                clip_target.tokenizer = _lazy_import("comfy.text_encoders.hidream", "HiDreamTokenizer")
             else:
                 clip_target.clip = sdxl_clip.SDXLRefinerClipModel
                 clip_target.tokenizer = sdxl_clip.SDXLTokenizer
         elif te_model == TEModel.CLIP_H:
-            clip_target.clip = comfy.text_encoders.sd2_clip.SD2ClipModel
-            clip_target.tokenizer = comfy.text_encoders.sd2_clip.SD2Tokenizer
+            clip_target.clip = _lazy_import("comfy.text_encoders.sd2_clip", "SD2ClipModel")
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.sd2_clip", "SD2Tokenizer")
         elif te_model == TEModel.T5_XXL:
             if clip_type == CLIPType.SD3:
-                clip_target.clip = comfy.text_encoders.sd3_clip.sd3_clip(clip_l=False, clip_g=False, t5=True, **t5xxl_detect(clip_data))
-                clip_target.tokenizer = comfy.text_encoders.sd3_clip.SD3Tokenizer
+                clip_target.clip = _lazy_import("comfy.text_encoders.sd3_clip", "sd3_clip")(clip_l=False, clip_g=False, t5=True, **t5xxl_detect(clip_data))
+                clip_target.tokenizer = _lazy_import("comfy.text_encoders.sd3_clip", "SD3Tokenizer")
             elif clip_type == CLIPType.LTXV:
-                clip_target.clip = comfy.text_encoders.lt.ltxv_te(**t5xxl_detect(clip_data))
-                clip_target.tokenizer = comfy.text_encoders.lt.LTXVT5Tokenizer
+                clip_target.clip = _lazy_import("comfy.text_encoders.lt", "ltxv_te")(**t5xxl_detect(clip_data))
+                clip_target.tokenizer = _lazy_import("comfy.text_encoders.lt", "LTXVT5Tokenizer")
             elif clip_type == CLIPType.PIXART or clip_type == CLIPType.CHROMA:
-                clip_target.clip = comfy.text_encoders.pixart_t5.pixart_te(**t5xxl_detect(clip_data))
-                clip_target.tokenizer = comfy.text_encoders.pixart_t5.PixArtTokenizer
+                clip_target.clip = _lazy_import("comfy.text_encoders.pixart_t5", "pixart_te")(**t5xxl_detect(clip_data))
+                clip_target.tokenizer = _lazy_import("comfy.text_encoders.pixart_t5", "PixArtTokenizer")
             elif clip_type == CLIPType.WAN:
-                clip_target.clip = comfy.text_encoders.wan.te(**t5xxl_detect(clip_data))
-                clip_target.tokenizer = comfy.text_encoders.wan.WanT5Tokenizer
+                clip_target.clip = _lazy_import("comfy.text_encoders.wan", "te")(**t5xxl_detect(clip_data))
+                clip_target.tokenizer = _lazy_import("comfy.text_encoders.wan", "WanT5Tokenizer")
                 tokenizer_data["spiece_model"] = clip_data[0].get("spiece_model", None)
             elif clip_type == CLIPType.HIDREAM:
-                clip_target.clip = comfy.text_encoders.hidream.hidream_clip(**t5xxl_detect(clip_data),
+                clip_target.clip = _lazy_import("comfy.text_encoders.hidream", "hidream_clip")(**t5xxl_detect(clip_data),
                                                                         clip_l=False, clip_g=False, t5=True, llama=False, dtype_llama=None)
-                clip_target.tokenizer = comfy.text_encoders.hidream.HiDreamTokenizer
+                clip_target.tokenizer = _lazy_import("comfy.text_encoders.hidream", "HiDreamTokenizer")
             else: #CLIPType.MOCHI
-                clip_target.clip = comfy.text_encoders.genmo.mochi_te(**t5xxl_detect(clip_data))
-                clip_target.tokenizer = comfy.text_encoders.genmo.MochiT5Tokenizer
+                clip_target.clip = _lazy_import("comfy.text_encoders.genmo", "mochi_te")(**t5xxl_detect(clip_data))
+                clip_target.tokenizer = _lazy_import("comfy.text_encoders.genmo", "MochiT5Tokenizer")
         elif te_model == TEModel.T5_XXL_OLD:
-            clip_target.clip = comfy.text_encoders.cosmos.te(**t5xxl_detect(clip_data))
-            clip_target.tokenizer = comfy.text_encoders.cosmos.CosmosT5Tokenizer
+            clip_target.clip = _lazy_import("comfy.text_encoders.cosmos", "te")(**t5xxl_detect(clip_data))
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.cosmos", "CosmosT5Tokenizer")
         elif te_model == TEModel.T5_XL:
-            clip_target.clip = comfy.text_encoders.aura_t5.AuraT5Model
-            clip_target.tokenizer = comfy.text_encoders.aura_t5.AuraT5Tokenizer
+            clip_target.clip = _lazy_import("comfy.text_encoders.aura_t5", "AuraT5Model")
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.aura_t5", "AuraT5Tokenizer")
         elif te_model == TEModel.T5_BASE:
             if clip_type == CLIPType.ACE or "spiece_model" in clip_data[0]:
-                clip_target.clip = comfy.text_encoders.ace.AceT5Model
-                clip_target.tokenizer = comfy.text_encoders.ace.AceT5Tokenizer
+                clip_target.clip = _lazy_import("comfy.text_encoders.ace", "AceT5Model")
+                clip_target.tokenizer = _lazy_import("comfy.text_encoders.ace", "AceT5Tokenizer")
                 tokenizer_data["spiece_model"] = clip_data[0].get("spiece_model", None)
             else:
-                clip_target.clip = comfy.text_encoders.sa_t5.SAT5Model
-                clip_target.tokenizer = comfy.text_encoders.sa_t5.SAT5Tokenizer
+                clip_target.clip = _lazy_import("comfy.text_encoders.sa_t5", "SAT5Model")
+                clip_target.tokenizer = _lazy_import("comfy.text_encoders.sa_t5", "SAT5Tokenizer")
         elif te_model == TEModel.GEMMA_2_2B:
-            clip_target.clip = comfy.text_encoders.lumina2.te(**llama_detect(clip_data))
-            clip_target.tokenizer = comfy.text_encoders.lumina2.LuminaTokenizer
+            clip_target.clip = _lazy_import("comfy.text_encoders.lumina2", "te")(**llama_detect(clip_data))
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.lumina2", "LuminaTokenizer")
             tokenizer_data["spiece_model"] = clip_data[0].get("spiece_model", None)
         elif te_model == TEModel.GEMMA_3_4B:
-            clip_target.clip = comfy.text_encoders.lumina2.te(**llama_detect(clip_data), model_type="gemma3_4b")
-            clip_target.tokenizer = comfy.text_encoders.lumina2.NTokenizer
+            clip_target.clip = _lazy_import("comfy.text_encoders.lumina2", "te")(**llama_detect(clip_data), model_type="gemma3_4b")
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.lumina2", "NTokenizer")
             tokenizer_data["spiece_model"] = clip_data[0].get("spiece_model", None)
         elif te_model == TEModel.GEMMA_3_4B_VISION:
-            clip_target.clip = comfy.text_encoders.lumina2.te(**llama_detect(clip_data), model_type="gemma3_4b_vision")
-            clip_target.tokenizer = comfy.text_encoders.lumina2.NTokenizer
+            clip_target.clip = _lazy_import("comfy.text_encoders.lumina2", "te")(**llama_detect(clip_data), model_type="gemma3_4b_vision")
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.lumina2", "NTokenizer")
             tokenizer_data["spiece_model"] = clip_data[0].get("spiece_model", None)
         elif te_model == TEModel.GEMMA_3_12B:
-            clip_target.clip = comfy.text_encoders.lt.gemma3_te(**llama_detect(clip_data))
-            clip_target.tokenizer = comfy.text_encoders.lt.Gemma3_12BTokenizer
+            clip_target.clip = _lazy_import("comfy.text_encoders.lt", "gemma3_te")(**llama_detect(clip_data))
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.lt", "Gemma3_12BTokenizer")
             tokenizer_data["spiece_model"] = clip_data[0].get("spiece_model", None)
         elif te_model == TEModel.LLAMA3_8:
-            clip_target.clip = comfy.text_encoders.hidream.hidream_clip(**llama_detect(clip_data),
+            clip_target.clip = _lazy_import("comfy.text_encoders.hidream", "hidream_clip")(**llama_detect(clip_data),
                                                                         clip_l=False, clip_g=False, t5=False, llama=True, dtype_t5=None)
-            clip_target.tokenizer = comfy.text_encoders.hidream.HiDreamTokenizer
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.hidream", "HiDreamTokenizer")
         elif te_model == TEModel.QWEN25_3B:
-            clip_target.clip = comfy.text_encoders.omnigen2.te(**llama_detect(clip_data))
-            clip_target.tokenizer = comfy.text_encoders.omnigen2.Omnigen2Tokenizer
+            clip_target.clip = _lazy_import("comfy.text_encoders.omnigen2", "te")(**llama_detect(clip_data))
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.omnigen2", "Omnigen2Tokenizer")
         elif te_model == TEModel.QWEN25_7B:
             if clip_type == CLIPType.HUNYUAN_IMAGE:
-                clip_target.clip = comfy.text_encoders.hunyuan_image.te(byt5=False, **llama_detect(clip_data))
-                clip_target.tokenizer = comfy.text_encoders.hunyuan_image.HunyuanImageTokenizer
+                clip_target.clip = _lazy_import("comfy.text_encoders.hunyuan_image", "te")(byt5=False, **llama_detect(clip_data))
+                clip_target.tokenizer = _lazy_import("comfy.text_encoders.hunyuan_image", "HunyuanImageTokenizer")
             elif clip_type == CLIPType.LONGCAT_IMAGE:
-                clip_target.clip = comfy.text_encoders.longcat_image.te(**llama_detect(clip_data))
-                clip_target.tokenizer = comfy.text_encoders.longcat_image.LongCatImageTokenizer
+                clip_target.clip = _lazy_import("comfy.text_encoders.longcat_image", "te")(**llama_detect(clip_data))
+                clip_target.tokenizer = _lazy_import("comfy.text_encoders.longcat_image", "LongCatImageTokenizer")
             else:
-                clip_target.clip = comfy.text_encoders.qwen_image.te(**llama_detect(clip_data))
-                clip_target.tokenizer = comfy.text_encoders.qwen_image.QwenImageTokenizer
+                clip_target.clip = _lazy_import("comfy.text_encoders.qwen_image", "te")(**llama_detect(clip_data))
+                clip_target.tokenizer = _lazy_import("comfy.text_encoders.qwen_image", "QwenImageTokenizer")
         elif te_model == TEModel.MISTRAL3_24B or te_model == TEModel.MISTRAL3_24B_PRUNED_FLUX2:
-            clip_target.clip = comfy.text_encoders.flux.flux2_te(**llama_detect(clip_data), pruned=te_model == TEModel.MISTRAL3_24B_PRUNED_FLUX2)
-            clip_target.tokenizer = comfy.text_encoders.flux.Flux2Tokenizer
+            clip_target.clip = _lazy_import("comfy.text_encoders.flux", "flux2_te")(**llama_detect(clip_data), pruned=te_model == TEModel.MISTRAL3_24B_PRUNED_FLUX2)
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.flux", "Flux2Tokenizer")
             tokenizer_data["tekken_model"] = clip_data[0].get("tekken_model", None)
         elif te_model == TEModel.QWEN3_4B:
             if clip_type == CLIPType.FLUX or clip_type == CLIPType.FLUX2:
-                clip_target.clip = comfy.text_encoders.flux.klein_te(**llama_detect(clip_data), model_type="qwen3_4b")
-                clip_target.tokenizer = comfy.text_encoders.flux.KleinTokenizer
+                clip_target.clip = _lazy_import("comfy.text_encoders.flux", "klein_te")(**llama_detect(clip_data), model_type="qwen3_4b")
+                clip_target.tokenizer = _lazy_import("comfy.text_encoders.flux", "KleinTokenizer")
             else:
-                clip_target.clip = comfy.text_encoders.z_image.te(**llama_detect(clip_data))
-                clip_target.tokenizer = comfy.text_encoders.z_image.ZImageTokenizer
+                clip_target.clip = _lazy_import("comfy.text_encoders.z_image", "te")(**llama_detect(clip_data))
+                clip_target.tokenizer = _lazy_import("comfy.text_encoders.z_image", "ZImageTokenizer")
         elif te_model == TEModel.QWEN3_2B:
-            clip_target.clip = comfy.text_encoders.ovis.te(**llama_detect(clip_data))
-            clip_target.tokenizer = comfy.text_encoders.ovis.OvisTokenizer
+            clip_target.clip = _lazy_import("comfy.text_encoders.ovis", "te")(**llama_detect(clip_data))
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.ovis", "OvisTokenizer")
         elif te_model == TEModel.QWEN3_8B:
-            clip_target.clip = comfy.text_encoders.flux.klein_te(**llama_detect(clip_data), model_type="qwen3_8b")
-            clip_target.tokenizer = comfy.text_encoders.flux.KleinTokenizer8B
+            clip_target.clip = _lazy_import("comfy.text_encoders.flux", "klein_te")(**llama_detect(clip_data), model_type="qwen3_8b")
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.flux", "KleinTokenizer8B")
         elif te_model == TEModel.JINA_CLIP_2:
-            clip_target.clip = comfy.text_encoders.jina_clip_2.JinaClip2TextModelWrapper
-            clip_target.tokenizer = comfy.text_encoders.jina_clip_2.JinaClip2TokenizerWrapper
+            clip_target.clip = _lazy_import("comfy.text_encoders.jina_clip_2", "JinaClip2TextModelWrapper")
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.jina_clip_2", "JinaClip2TokenizerWrapper")
         elif te_model in (TEModel.QWEN35_08B, TEModel.QWEN35_2B, TEModel.QWEN35_4B, TEModel.QWEN35_9B, TEModel.QWEN35_27B):
             clip_data[0] = comfy.utils.state_dict_prefix_replace(clip_data[0], {"model.language_model.": "model.", "model.visual.": "visual.", "lm_head.": "model.lm_head."})
             qwen35_type = {TEModel.QWEN35_08B: "qwen35_08b", TEModel.QWEN35_2B: "qwen35_2b", TEModel.QWEN35_4B: "qwen35_4b", TEModel.QWEN35_9B: "qwen35_9b", TEModel.QWEN35_27B: "qwen35_27b"}[te_model]
-            clip_target.clip = comfy.text_encoders.qwen35.te(**llama_detect(clip_data), model_type=qwen35_type)
-            clip_target.tokenizer = comfy.text_encoders.qwen35.tokenizer(model_type=qwen35_type)
+            clip_target.clip = _lazy_import("comfy.text_encoders.qwen35", "te")(**llama_detect(clip_data), model_type=qwen35_type)
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.qwen35", "tokenizer")(model_type=qwen35_type)
         elif te_model == TEModel.QWEN3_06B:
-            clip_target.clip = comfy.text_encoders.anima.te(**llama_detect(clip_data))
-            clip_target.tokenizer = comfy.text_encoders.anima.AnimaTokenizer
+            clip_target.clip = _lazy_import("comfy.text_encoders.anima", "te")(**llama_detect(clip_data))
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.anima", "AnimaTokenizer")
         else:
             # clip_l
             if clip_type == CLIPType.SD3:
-                clip_target.clip = comfy.text_encoders.sd3_clip.sd3_clip(clip_l=True, clip_g=False, t5=False)
-                clip_target.tokenizer = comfy.text_encoders.sd3_clip.SD3Tokenizer
+                clip_target.clip = _lazy_import("comfy.text_encoders.sd3_clip", "sd3_clip")(clip_l=True, clip_g=False, t5=False)
+                clip_target.tokenizer = _lazy_import("comfy.text_encoders.sd3_clip", "SD3Tokenizer")
             elif clip_type == CLIPType.HIDREAM:
-                clip_target.clip = comfy.text_encoders.hidream.hidream_clip(clip_l=True, clip_g=False, t5=False, llama=False, dtype_t5=None, dtype_llama=None)
-                clip_target.tokenizer = comfy.text_encoders.hidream.HiDreamTokenizer
+                clip_target.clip = _lazy_import("comfy.text_encoders.hidream", "hidream_clip")(clip_l=True, clip_g=False, t5=False, llama=False, dtype_t5=None, dtype_llama=None)
+                clip_target.tokenizer = _lazy_import("comfy.text_encoders.hidream", "HiDreamTokenizer")
             else:
                 clip_target.clip = sd1_clip.SD1ClipModel
                 clip_target.tokenizer = sd1_clip.SD1Tokenizer
     elif len(clip_data) == 2:
         if clip_type == CLIPType.SD3:
             te_models = [detect_te_model(clip_data[0]), detect_te_model(clip_data[1])]
-            clip_target.clip = comfy.text_encoders.sd3_clip.sd3_clip(clip_l=TEModel.CLIP_L in te_models, clip_g=TEModel.CLIP_G in te_models, t5=TEModel.T5_XXL in te_models, **t5xxl_detect(clip_data))
-            clip_target.tokenizer = comfy.text_encoders.sd3_clip.SD3Tokenizer
+            clip_target.clip = _lazy_import("comfy.text_encoders.sd3_clip", "sd3_clip")(clip_l=TEModel.CLIP_L in te_models, clip_g=TEModel.CLIP_G in te_models, t5=TEModel.T5_XXL in te_models, **t5xxl_detect(clip_data))
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.sd3_clip", "SD3Tokenizer")
         elif clip_type == CLIPType.HUNYUAN_DIT:
-            clip_target.clip = comfy.text_encoders.hydit.HyditModel
-            clip_target.tokenizer = comfy.text_encoders.hydit.HyditTokenizer
+            clip_target.clip = _lazy_import("comfy.text_encoders.hydit", "HyditModel")
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.hydit", "HyditTokenizer")
         elif clip_type == CLIPType.FLUX:
-            clip_target.clip = comfy.text_encoders.flux.flux_clip(**t5xxl_detect(clip_data))
-            clip_target.tokenizer = comfy.text_encoders.flux.FluxTokenizer
+            clip_target.clip = _lazy_import("comfy.text_encoders.flux", "flux_clip")(**t5xxl_detect(clip_data))
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.flux", "FluxTokenizer")
         elif clip_type == CLIPType.HUNYUAN_VIDEO:
-            clip_target.clip = comfy.text_encoders.hunyuan_video.hunyuan_video_clip(**llama_detect(clip_data))
-            clip_target.tokenizer = comfy.text_encoders.hunyuan_video.HunyuanVideoTokenizer
+            clip_target.clip = _lazy_import("comfy.text_encoders.hunyuan_video", "hunyuan_video_clip")(**llama_detect(clip_data))
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.hunyuan_video", "HunyuanVideoTokenizer")
         elif clip_type == CLIPType.HIDREAM:
             # Detect
             hidream_dualclip_classes = []
@@ -1492,27 +1446,27 @@ def load_text_encoder_state_dicts(state_dicts=[], embedding_directory=None, clip
             t5_kwargs = t5xxl_detect(clip_data) if t5 else {}
             llama_kwargs = llama_detect(clip_data) if llama else {}
 
-            clip_target.clip = comfy.text_encoders.hidream.hidream_clip(clip_l=clip_l, clip_g=clip_g, t5=t5, llama=llama, **t5_kwargs, **llama_kwargs)
-            clip_target.tokenizer = comfy.text_encoders.hidream.HiDreamTokenizer
+            clip_target.clip = _lazy_import("comfy.text_encoders.hidream", "hidream_clip")(clip_l=clip_l, clip_g=clip_g, t5=t5, llama=llama, **t5_kwargs, **llama_kwargs)
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.hidream", "HiDreamTokenizer")
         elif clip_type == CLIPType.HUNYUAN_IMAGE:
-            clip_target.clip = comfy.text_encoders.hunyuan_image.te(**llama_detect(clip_data))
-            clip_target.tokenizer = comfy.text_encoders.hunyuan_image.HunyuanImageTokenizer
+            clip_target.clip = _lazy_import("comfy.text_encoders.hunyuan_image", "te")(**llama_detect(clip_data))
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.hunyuan_image", "HunyuanImageTokenizer")
         elif clip_type == CLIPType.HUNYUAN_VIDEO_15:
-            clip_target.clip = comfy.text_encoders.hunyuan_image.te(**llama_detect(clip_data))
-            clip_target.tokenizer = comfy.text_encoders.hunyuan_video.HunyuanVideo15Tokenizer
+            clip_target.clip = _lazy_import("comfy.text_encoders.hunyuan_image", "te")(**llama_detect(clip_data))
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.hunyuan_video", "HunyuanVideo15Tokenizer")
         elif clip_type == CLIPType.KANDINSKY5:
-            clip_target.clip = comfy.text_encoders.kandinsky5.te(**llama_detect(clip_data))
-            clip_target.tokenizer = comfy.text_encoders.kandinsky5.Kandinsky5Tokenizer
+            clip_target.clip = _lazy_import("comfy.text_encoders.kandinsky5", "te")(**llama_detect(clip_data))
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.kandinsky5", "Kandinsky5Tokenizer")
         elif clip_type == CLIPType.KANDINSKY5_IMAGE:
-            clip_target.clip = comfy.text_encoders.kandinsky5.te(**llama_detect(clip_data))
-            clip_target.tokenizer = comfy.text_encoders.kandinsky5.Kandinsky5TokenizerImage
+            clip_target.clip = _lazy_import("comfy.text_encoders.kandinsky5", "te")(**llama_detect(clip_data))
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.kandinsky5", "Kandinsky5TokenizerImage")
         elif clip_type == CLIPType.LTXV:
-            clip_target.clip = comfy.text_encoders.lt.ltxav_te(**llama_detect(clip_data), **comfy.text_encoders.lt.sd_detect(clip_data))
-            clip_target.tokenizer = comfy.text_encoders.lt.LTXAVGemmaTokenizer
+            clip_target.clip = _lazy_import("comfy.text_encoders.lt", "ltxav_te")(**llama_detect(clip_data), **_lazy_import("comfy.text_encoders.lt", "sd_detect")(clip_data))
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.lt", "LTXAVGemmaTokenizer")
             tokenizer_data["spiece_model"] = clip_data[0].get("spiece_model", None)
         elif clip_type == CLIPType.NEWBIE:
-            clip_target.clip = comfy.text_encoders.newbie.te(**llama_detect(clip_data))
-            clip_target.tokenizer = comfy.text_encoders.newbie.NewBieTokenizer
+            clip_target.clip = _lazy_import("comfy.text_encoders.newbie", "te")(**llama_detect(clip_data))
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.newbie", "NewBieTokenizer")
             if "model.layers.0.self_attn.q_norm.weight" in clip_data[0]:
                 clip_data_gemma = clip_data[0]
                 clip_data_jina = clip_data[1]
@@ -1527,22 +1481,22 @@ def load_text_encoder_state_dicts(state_dicts=[], embedding_directory=None, clip
                 model_type = "qwen3_4b"
             else:
                 model_type = "qwen3_2b"
-            clip_target.clip = comfy.text_encoders.ace15.te(lm_model=model_type, **llama_detect(clip_data))
-            clip_target.tokenizer = comfy.text_encoders.ace15.ACE15Tokenizer
+            clip_target.clip = _lazy_import("comfy.text_encoders.ace15", "te")(lm_model=model_type, **llama_detect(clip_data))
+            clip_target.tokenizer = _lazy_import("comfy.text_encoders.ace15", "ACE15Tokenizer")
         else:
             clip_target.clip = sdxl_clip.SDXLClipModel
             clip_target.tokenizer = sdxl_clip.SDXLTokenizer
     elif len(clip_data) == 3:
-        clip_target.clip = comfy.text_encoders.sd3_clip.sd3_clip(**t5xxl_detect(clip_data))
-        clip_target.tokenizer = comfy.text_encoders.sd3_clip.SD3Tokenizer
+        clip_target.clip = _lazy_import("comfy.text_encoders.sd3_clip", "sd3_clip")(**t5xxl_detect(clip_data))
+        clip_target.tokenizer = _lazy_import("comfy.text_encoders.sd3_clip", "SD3Tokenizer")
     elif len(clip_data) == 4:
-        clip_target.clip = comfy.text_encoders.hidream.hidream_clip(**t5xxl_detect(clip_data), **llama_detect(clip_data))
-        clip_target.tokenizer = comfy.text_encoders.hidream.HiDreamTokenizer
+        clip_target.clip = _lazy_import("comfy.text_encoders.hidream", "hidream_clip")(**t5xxl_detect(clip_data), **llama_detect(clip_data))
+        clip_target.tokenizer = _lazy_import("comfy.text_encoders.hidream", "HiDreamTokenizer")
 
     parameters = 0
     for c in clip_data:
         parameters += comfy.utils.calculate_parameters(c)
-        tokenizer_data, model_options = comfy.text_encoders.long_clipl.model_options_long_clip(c, tokenizer_data, model_options)
+        tokenizer_data, model_options = _lazy_import("comfy.text_encoders.long_clipl", "model_options_long_clip")(c, tokenizer_data, model_options)
 
     clip = CLIP(clip_target, embedding_directory=embedding_directory, parameters=parameters, tokenizer_data=tokenizer_data, state_dict=clip_data, model_options=model_options, disable_dynamic=disable_dynamic)
     return clip
